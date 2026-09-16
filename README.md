@@ -1,36 +1,63 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# LandscapeEstimate
 
-## Getting Started
+A materials cost estimator for landscape contractors. Type in what a job needs, get live pricing back, and apply markup to produce a quote total.
 
-First, run the development server:
+## Why I built it
+
+I've worked at a landscape contracting company since 2022. Quotes there get built by hand — an estimator looks up material prices one item at a time, adds margin on paper, and writes a number down. It's slow, it's inconsistent between jobs, and the prices are usually whatever was true the last time somebody checked. That produces estimates that are either inflated or leave money on the table.
+
+This collapses that into a single entry field.
+
+## Features
+
+- **Free-text material entry** — type in any material instead of picking from a fixed catalog
+- **Live price retrieval** — pulls current pricing rather than relying on a stale list
+- **Markup calculator** — applies configurable margin and generates a customer-facing quote total
+- **Saved material lists** — each account keeps its most commonly used materials for faster repeat estimates
+
+## Stack
+
+| Layer | Tool |
+|---|---|
+| Framework | Next.js |
+| Language | TypeScript |
+| Pricing | Anthropic API |
+| Database | Neon (serverless Postgres) |
+| Auth | Clerk |
+
+## Running locally
 
 ```bash
+git clone https://github.com/jesse-hendershot/LandscapeEstimate.git
+cd LandscapeEstimate
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Then open `http://localhost:3000`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+You'll need your own credentials. Copy `.env.example` to `.env.local` and fill in:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```
+ANTHROPIC_API_KEY=
+DATABASE_URL=
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=
+CLERK_SECRET_KEY=
+```
 
-## Learn More
+## Status
 
-To learn more about Next.js, take a look at the following resources:
+Running locally. Field trial with a working contractor planned for Fall 2026.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+On the roadmap:
+- Aggressive caching on price lookups to cut API cost
+- A demo mode that runs off a static price set, so the app is usable without credentials
+- Deployment
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Screenshots
 
-## Deploy on Vercel
+<!-- Add 2-3 here: the input screen, a returned estimate, and the markup view. -->
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## About
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Built by Jesse Hendershot, mechanical engineering student at the University of Iowa.
