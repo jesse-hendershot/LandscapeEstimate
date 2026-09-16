@@ -1,62 +1,120 @@
 # LandscapeEstimate
 
-A materials cost estimator for landscape contractors. Type in what a job needs, get live pricing back, and apply markup to produce a quote total.
+A materials cost estimator for landscape contractors. Describe the job in plain English, get a priced materials list, apply your markup, hand the customer a PDF.
+
+![Estimate output](docs/estimate.png)
 
 ## Why I built it
 
 I've worked at a landscape contracting company since 2022. Quotes there get built by hand — an estimator looks up material prices one item at a time, adds margin on paper, and writes a number down. It's slow, it's inconsistent between jobs, and the prices are usually whatever was true the last time somebody checked. That produces estimates that are either inflated or leave money on the table.
 
-This collapses that into a single entry field.
+This collapses that into a single text box.
+
+## How it works
+
+The shop keeps a **catalog** — the twenty-odd things it buys every week, at its real prices. The model never sees a catalog price and never supplies one. It reads the job, picks materials, and returns a catalog id and a quantity; the server applies the price.
+
+That has two consequences worth stating plainly:
+
+- **A catalog line cannot have a wrong price.** A wrong price is wrong in exactly one place, where one person fixes it once for every future job.
+- **The model does no arithmetic.** Delivery, tax, subtotal and grand total are all computed in TypeScript. Money is integer cents everywhere; no float touches a number a contractor reads.
+
+Anything off-catalog — a specific plant, an odd block — gets researched with web search, and those lines are flagged with their source so you can see which numbers are solid and which are estimates.
 
 ## Features
 
-- **Free-text material entry** — type in any material instead of picking from a fixed catalog
-- **Live price retrieval** — pulls current pricing rather than relying on a stale list
-- **Markup calculator** — applies configurable margin and generates a customer-facing quote total
-- **Saved material lists** — each account keeps its most commonly used materials for faster repeat estimates
+- **Plain-English job entry.** No forms, no dropdowns, no picking from a list.
+- **Per-account catalog.** Your prices, used exactly as written.
+- **Clarifying questions.** If the job is underspecified the model says so instead of guessing — a retaining wall with no stated height comes back with questions, not an invented block count.
+- **Markup calculator.** Slide from 10% to 150% and see materials cost, your margin, and the customer-facing number.
+- **PDF export.** Customer-ready quote.
+- **Verification gates.** Every generated estimate runs a deterministic gate stack before it reaches you — unit mismatches, duplicate materials, bad sources, out-of-band prices. Failures are shown, never hidden, and never block the estimate.
 
 ## Stack
 
 | Layer | Tool |
 |---|---|
-| Framework | Next.js |
+| Framework | Next.js (App Router) |
 | Language | TypeScript |
-| Pricing | Anthropic API |
-| Database | Neon (serverless Postgres) |
+| Research | Anthropic API with web search |
+| Database | Neon (serverless Postgres) + Drizzle ORM |
 | Auth | Clerk |
+| PDF | jsPDF + jspdf-autotable |
 
-## Running locally
+## Running it yourself
+
+You'll need free accounts on three services. Total cost to try it is a few cents of Anthropic usage.
+
+### 1. Clone and install
 
 ```bash
 git clone https://github.com/jesse-hendershot/LandscapeEstimate.git
 cd LandscapeEstimate
 npm install
+```
+
+### 2. Get credentials
+
+**Neon** — create a project at [neon.tech](https://neon.tech). Copy the pooled connection string from Connection Details (the host with `-pooler` in it).
+
+**Clerk** — create an application at [dashboard.clerk.com](https://dashboard.clerk.com). Copy the publishable key and the secret key from API Keys.
+
+**Anthropic** — create a key at [console.anthropic.com](https://console.anthropic.com). Set a spend limit under Billing while you're there.
+
+### 3. Configure
+
+```bash
+cp .env.example .env.local
+```
+
+Fill in the four required values:
+
+| Variable | Where it comes from |
+|---|---|
+| `DATABASE_URL` | Neon pooled connection string |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk → API Keys |
+| `CLERK_SECRET_KEY` | Clerk → API Keys |
+| `ANTHROPIC_API_KEY` | Anthropic console |
+
+`.env.local` is gitignored. Never commit it.
+
+### 4. Create the schema
+
+```bash
+npx drizzle-kit push
+```
+
+### 5. Run
+
+```bash
 npm run dev
 ```
 
-Then open `http://localhost:3000`.
+Open `http://localhost:3000`, create an account, and generate an estimate. A starter catalog of 25 common materials seeds automatically on your first run — edit it under **Materials** to match what you actually pay.
 
-You'll need your own credentials. Copy `.env.example` to `.env.local` and fill in:
+## Optional tuning
 
+These control cost and are all optional:
+
+| Variable | Effect |
+|---|---|
+| `ESTIMATE_MODEL` | Model for the main call. Defaults to the top tier. |
+| `ESTIMATE_REPAIR_MODEL` | Model for the repair pass. Defaults to `ESTIMATE_MODEL`. |
+| `ESTIMATE_SEARCH_FIRST` | Set to `false` to skip web search on the first pass. Catalog-only jobs need no research; the repair pass still enables search when the sources gate fails. |
+
+Every estimate run is logged to `estimate_runs` with gates tripped, catalog vs researched line counts, latency and token usage — so cost and quality are measurable rather than guessed at.
+
+## Tests
+
+```bash
+npx tsx --test lib/estimate/gates.test.ts
 ```
-ANTHROPIC_API_KEY=
-DATABASE_URL=
-NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=
-CLERK_SECRET_KEY=
-```
+
+26 tests covering the gate stack against fixtures.
 
 ## Status
 
 Running locally. Field trial with a working contractor planned for Fall 2026.
-
-On the roadmap:
-- Aggressive caching on price lookups to cut API cost
-- A demo mode that runs off a static price set, so the app is usable without credentials
-- Deployment
-
-## Screenshots
-
-<!-- Add 2-3 here: the input screen, a returned estimate, and the markup view. -->
 
 ## About
 
