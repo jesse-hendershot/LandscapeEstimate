@@ -27,19 +27,27 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <ClerkProvider>
-      <html
-        lang="en"
-        className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+    <html
+      lang="en"
+      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+    >
+      <body
+        className="min-h-full flex flex-col"
+        style={{ background: C.bg, color: C.black }}
       >
-        <body
-          className="min-h-full flex flex-col"
-          style={{ background: C.bg, color: C.black }}
-        >
+        {/*
+          ClerkProvider goes INSIDE <body>, not wrapping <html>.
+
+          Wrapping <html> was the documented pattern for years and is what most
+          examples still show, but Clerk Core 3 renders elements that have to
+          live inside the body. Same category of drift as <SignedIn>, which was
+          removed in Core 3 and now throws.
+        */}
+        <ClerkProvider>
           <SiteHeader />
           {children}
-        </body>
-      </html>
-    </ClerkProvider>
+        </ClerkProvider>
+      </body>
+    </html>
   );
 }

@@ -13,7 +13,22 @@ import { repairInstruction, verifyBuild } from "@/lib/estimate/verifyBuild";
 import { fromCents } from "@/lib/money";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const MODEL = "claude-opus-4-8";
+
+// Model tier is configuration, not a constant. Catalog-first shrank the model's
+// job to reading a job description, picking from a ~20-item list and computing
+// quantities — that is extraction, and extraction does not need the top tier.
+// Swapping these against the fixture suite is how we find out where the floor
+// is, instead of guessing.
+const MODEL = process.env.ESTIMATE_MODEL ?? "claude-opus-4-8";
+const REPAIR_MODEL = process.env.ESTIMATE_REPAIR_MODEL ?? MODEL;
+
+// Search costs the search plus the result tokens it injects at input rates.
+// Catalog lines need none of it — the price comes from the catalog. Default is
+// on so this deploys with no behaviour change; set ESTIMATE_SEARCH_FIRST=false
+// to test whether the repair pass alone covers the off-catalog cases.
+const SEARCH_FIRST_PASS = process.env.ESTIMATE_SEARCH_FIRST !== "false";
+
+const WEB_SEARCH = { type: "web_search_20250305", name: "web_search" } as const;
 
 export const maxDuration = 180;
 
@@ -51,9 +66,15 @@ export async function POST(req: NextRequest) {
       model: MODEL,
       max_tokens: 8000,
       system,
-      tools: [{ type: "web_search_20250305", name: "web_search" }],
+      ...(SEARCH_FIRST_PASS ? { tools: [WEB_SEARCH] } : {}),
       messages: [{ role: "user", content: user }],
     } as Parameters<typeof client.messages.create>[0])) as Message;
+
+    // Accumulate across every call in the run. Logging only the first call
+    // understates cost on exactly the runs that cost the most — the repaired
+    // ones, which replay the whole conversation and sometimes add search.
+    let inputTokens = first.usage?.input_tokens ?? 0;
+    let outputTokens = first.usage?.output_tokens ?? 0;
 
     const parsed = extractJson<ModelOutput>(first);
     if (!parsed.ok) {
@@ -85,18 +106,19 @@ export async function POST(req: NextRequest) {
 
       try {
         const repair = (await client.messages.create({
-          model: MODEL,
+          model: REPAIR_MODEL,
           max_tokens: 8000,
           system,
-          ...(needsSearch
-            ? { tools: [{ type: "web_search_20250305", name: "web_search" }] }
-            : {}),
+          ...(needsSearch ? { tools: [WEB_SEARCH] } : {}),
           messages: [
             { role: "user", content: user },
             { role: "assistant", content: JSON.stringify(parsed.value) },
             { role: "user", content: repairInstruction(verdict.errors, built) },
           ],
         } as Parameters<typeof client.messages.create>[0])) as Message;
+
+        inputTokens += repair.usage?.input_tokens ?? 0;
+        outputTokens += repair.usage?.output_tokens ?? 0;
 
         const reparsed = extractJson<ModelOutput>(repair);
         if (reparsed.ok) {
@@ -122,7 +144,7 @@ export async function POST(req: NextRequest) {
 
     const lineItems = toLineItems(built, profile.taxRateBps);
 
-    // ── persist ───────────────────────────────────────────────────────────
+    // ── persist ──────────────────────────────────────────────────────────────
     let estimateId: string | null = null;
     try {
       const [row] = await db
@@ -188,8 +210,8 @@ export async function POST(req: NextRequest) {
         catalogLines: built.catalogLineCount,
         researchedLines: built.customLineCount,
         latencyMs: Date.now() - startedAt,
-        inputTokens: first.usage?.input_tokens,
-        outputTokens: first.usage?.output_tokens,
+        inputTokens,
+        outputTokens,
       });
     } catch (err) {
       // A persistence failure must not cost the estimator their estimate. They

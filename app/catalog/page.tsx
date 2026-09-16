@@ -1,4 +1,4 @@
-import { requireOwner } from "@/lib/auth";
+import { requireProfile } from "@/lib/auth";
 import { listMaterials, seedCatalogIfEmpty } from "@/lib/catalog/repo";
 import { fromCents } from "@/lib/money";
 
@@ -8,7 +8,11 @@ import CatalogTable, { type CatalogMaterial } from "./CatalogTable";
 export const dynamic = "force-dynamic";
 
 export default async function CatalogPage() {
-  const ownerId = await requireOwner();
+  // requireProfile rather than requireOwner: it creates the profile row on
+  // first sight. Using requireOwner here meant an account could seed a whole
+  // catalog and still have no profile — so no markup and no tax rate — until
+  // it happened to generate an estimate.
+  const { id: ownerId } = await requireProfile();
 
   // First visit lands on a populated table rather than an empty one. Idempotent,
   // and it does nothing for an account that deliberately emptied its catalog.

@@ -39,3 +39,11 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# allow the env template through
+!.env.example
+
+# workspace debris
+.claude/
+Claude outputs/
+skills-lock.json
