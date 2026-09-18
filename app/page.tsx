@@ -597,8 +597,8 @@ export default function Home() {
       columnStyles: {
         1: { cellWidth: 35 },
         2: { cellWidth: 52 },
-        3: { halign: "right", cellWidth: 55 },
-        4: { halign: "right", cellWidth: 55 },
+        3: { halign: "right", cellWidth: 68 },
+        4: { halign: "right", cellWidth: 68 },
       },
     });
 
@@ -607,6 +607,9 @@ export default function Home() {
     // Grand total row
     autoTable(doc, {
       startY: y,
+      theme: "plain", // headless body-only table: without this, autoTable's default
+      // "striped" theme silently overrides bodyStyles.fillColor below, leaving white
+      // text on a near-white background instead of the intended green bar.
       body: [["GRAND TOTAL", "", "", `$${fmt(grandLow)}`, `$${fmt(grandHigh)}`, ""]],
       margin: { left: M, right: M },
       bodyStyles: {
@@ -617,8 +620,8 @@ export default function Home() {
       columnStyles: {
         1: { cellWidth: 35 },
         2: { cellWidth: 52 },
-        3: { halign: "right", cellWidth: 55 },
-        4: { halign: "right", cellWidth: 55 },
+        3: { halign: "right", cellWidth: 90 },
+        4: { halign: "right", cellWidth: 90 },
       },
     });
 
