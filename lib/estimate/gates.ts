@@ -26,7 +26,6 @@ import {
   isGrandTotal,
   isSpecial,
   isTax,
-  materialRows,
   parseUnit,
   pass,
   subtotal,

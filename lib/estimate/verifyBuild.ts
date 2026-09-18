@@ -15,8 +15,8 @@
  * custom one, and prices for things the shop does not stock.
  */
 
-import type { BuiltEstimate, BuiltLine } from "./build";
-import { extendCents, fromCents, fromMilli } from "../money";
+import type { BuiltEstimate } from "./build";
+import { fromCents, fromMilli } from "../money";
 import { fail, pass, type GateResult } from "./schema";
 import { checkBand, matchPrior } from "./priors";
 import { parseUnit } from "./schema";

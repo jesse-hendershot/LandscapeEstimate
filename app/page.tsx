@@ -276,11 +276,64 @@ function ClarificationInput({
   );
 }
 
+// ── Saved panel (shared between sidebar and mobile drawer) ─────────────────
+// Declared at module scope so React keeps the same component type across
+// renders — defined inside Home() it remounted on every render, wiping the
+// list's scroll position.
+
+function SavedPanel({
+  saved,
+  onLoad,
+  onDelete,
+}: {
+  saved: SavedEstimate[];
+  onLoad: (s: SavedEstimate) => void;
+  onDelete: (id: string) => void;
+}) {
+  return (
+    <>
+      <h2 style={{ fontSize: 20, fontWeight: "bold", color: C.green, marginTop: 0, marginBottom: 16 }}>
+        📋 Past Jobs
+      </h2>
+      {saved.length === 0 ? (
+        <p style={{ fontSize: 16, color: "#777", lineHeight: 1.7, textAlign: "center", marginTop: 20 }}>
+          No saved jobs yet.<br />Generate your first estimate<br />and hit Save! 🌱
+        </p>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12, overflowY: "auto" }}>
+          {saved.map(s => (
+            <div key={s.id} style={{ border: "2px solid #e5e7eb", borderRadius: 10, padding: 14, backgroundColor: C.bg }}>
+              <div style={{ fontSize: 15, fontWeight: "bold", color: C.black, marginBottom: 2 }}>{s.jobAddress}</div>
+              <div style={{ fontSize: 13, color: "#666", marginBottom: 6 }}>{s.dateGenerated}</div>
+              <div style={{ fontSize: 15, fontWeight: "bold", color: C.green, marginBottom: 10 }}>
+                ${fmt(s.grandTotalLow)} – ${fmt(s.grandTotalHigh)}
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  onClick={() => onLoad(s)}
+                  style={{ flex: 1, backgroundColor: C.green, color: "#fff", fontSize: 14, fontWeight: "bold", padding: "8px 10px", borderRadius: 8, border: "none", cursor: "pointer" }}
+                >
+                  Load
+                </button>
+                <button
+                  onClick={() => onDelete(s.id)}
+                  style={{ backgroundColor: "#fff", color: C.red, fontSize: 14, fontWeight: "bold", padding: "8px 12px", borderRadius: 8, border: `2px solid ${C.red}`, cursor: "pointer" }}
+                >
+                  🗑️
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
 // ── Main Component ─────────────────────────────────────────────────────────
 
 export default function Home() {
   // Profile
-  const [profile, setProfile]           = useState<Profile | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [profileName, setProfileName]   = useState("");
   const [profileMrk, setProfileMrk]     = useState(35);
@@ -314,12 +367,15 @@ export default function Home() {
 
   // ── Bootstrap ──
 
+  /* eslint-disable react-hooks/set-state-in-effect --
+     localStorage does not exist during SSR or the first client render, so the
+     stored profile can only be read after mount. Seeding these fields once
+     here is deliberate; they are ordinary editable state afterward. */
   useEffect(() => {
     try {
       const p = localStorage.getItem("le_profile");
       if (p) {
         const parsed = JSON.parse(p) as Profile;
-        setProfile(parsed);
         setContractor(parsed.name);
         setMarkup(parsed.defaultMarkup);
         setProfileName(parsed.name);
@@ -331,13 +387,12 @@ export default function Home() {
       if (s) setSaved(JSON.parse(s));
     } catch {}
   }, []);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // ── Loading animation ──
 
   useEffect(() => {
     if (loading) {
-      setMsgIdx(0);
-      setMsgVisible(true);
       intervalRef.current = setInterval(() => {
         setMsgVisible(false);
         setTimeout(() => {
@@ -385,6 +440,10 @@ export default function Home() {
   async function runEstimate() {
     if (!address || !description) return;
     setLoading(true);
+    // Reset the rotating status line here rather than inside the effect, so the
+    // effect only owns the interval it sets up.
+    setMsgIdx(0);
+    setMsgVisible(true);
     setError("");
     setEstimate(null);
     setItems([]);
@@ -468,7 +527,6 @@ export default function Home() {
 
   function saveProfile() {
     const p: Profile = { name: profileName, defaultMarkup: profileMrk };
-    setProfile(p);
     try { localStorage.setItem("le_profile", JSON.stringify(p)); } catch {}
     setContractor(profileName);
     setMarkup(profileMrk);
@@ -668,7 +726,8 @@ export default function Home() {
               const delIdx = next.findIndex(isDelivery);
               // eslint-disable-next-line @typescript-eslint/no-unused-vars
               const { action: _a, ...item } = upd;
-              delIdx >= 0 ? next.splice(delIdx, 0, item) : next.push(item);
+              if (delIdx >= 0) next.splice(delIdx, 0, item);
+              else next.push(item);
             } else {
               const idx = next.findIndex(i => i.material === upd.material);
               if (idx >= 0) {
@@ -711,47 +770,6 @@ export default function Home() {
   };
 
   const hasEstimate = !!(estimate && items.length > 0);
-
-  // ── Saved panel (shared between sidebar and mobile drawer) ──
-
-  const SavedPanel = () => (
-    <>
-      <h2 style={{ fontSize: 20, fontWeight: "bold", color: C.green, marginTop: 0, marginBottom: 16 }}>
-        📋 Past Jobs
-      </h2>
-      {saved.length === 0 ? (
-        <p style={{ fontSize: 16, color: "#777", lineHeight: 1.7, textAlign: "center", marginTop: 20 }}>
-          No saved jobs yet.<br />Generate your first estimate<br />and hit Save! 🌱
-        </p>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12, overflowY: "auto" }}>
-          {saved.map(s => (
-            <div key={s.id} style={{ border: "2px solid #e5e7eb", borderRadius: 10, padding: 14, backgroundColor: C.bg }}>
-              <div style={{ fontSize: 15, fontWeight: "bold", color: C.black, marginBottom: 2 }}>{s.jobAddress}</div>
-              <div style={{ fontSize: 13, color: "#666", marginBottom: 6 }}>{s.dateGenerated}</div>
-              <div style={{ fontSize: 15, fontWeight: "bold", color: C.green, marginBottom: 10 }}>
-                ${fmt(s.grandTotalLow)} – ${fmt(s.grandTotalHigh)}
-              </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button
-                  onClick={() => loadSaved(s)}
-                  style={{ flex: 1, backgroundColor: C.green, color: "#fff", fontSize: 14, fontWeight: "bold", padding: "8px 10px", borderRadius: 8, border: "none", cursor: "pointer" }}
-                >
-                  Load
-                </button>
-                <button
-                  onClick={() => setDeleteId(s.id)}
-                  style={{ backgroundColor: "#fff", color: C.red, fontSize: 14, fontWeight: "bold", padding: "8px 12px", borderRadius: 8, border: `2px solid ${C.red}`, cursor: "pointer" }}
-                >
-                  🗑️
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </>
-  );
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -828,7 +846,7 @@ export default function Home() {
           className="le-sidebar"
           style={{ width: 280, minWidth: 280, backgroundColor: "#fff", borderRight: `3px solid ${C.green}`, padding: "28px 16px", display: "flex", flexDirection: "column" }}
         >
-          <SavedPanel />
+          <SavedPanel saved={saved} onLoad={loadSaved} onDelete={setDeleteId} />
         </aside>
 
         {/* Main */}
@@ -882,7 +900,7 @@ export default function Home() {
                   <span style={{ fontSize: 18, fontWeight: "bold", color: C.green }}>📋 Past Jobs</span>
                   <button onClick={() => setShowSidebar(false)} style={{ fontSize: 22, border: "none", background: "none", cursor: "pointer", color: "#666" }}>✕</button>
                 </div>
-                <SavedPanel />
+                <SavedPanel saved={saved} onLoad={loadSaved} onDelete={setDeleteId} />
               </div>
             )}
 
