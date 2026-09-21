@@ -2,7 +2,11 @@
 
 A materials cost estimator for landscape contractors. Describe the job in plain English, get a priced materials list, apply your markup, hand the customer a PDF.
 
-![Estimate output](docs/estimate.png)
+![Estimate output](docs/estimate.png) 
+<img width="942" height="502" alt="Screenshot 2026-09-16 010750" src="https://github.com/user-attachments/assets/2261e7b5-7841-4503-8934-f240477fae2a" />
+<img width="947" height="527" alt="Screenshot 2026-09-16 010713" src="https://github.com/user-attachments/assets/35e76053-9e6e-4bf6-b24b-e30779b6d20f" />
+<img width="944" height="532" alt="Screenshot 2026-09-16 005625" src="https://github.com/user-attachments/assets/dd1b5b4d-777d-41df-84f9-d083b7d4d2be" />
+
 
 ## Why I built it
 
