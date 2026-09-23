@@ -1,5 +1,12 @@
 # LandscapeEstimate
 
+**[Open the live app](https://landscape-estimate.vercel.app/)** · [Run it yourself](#running-it-yourself)
+
+A materials cost estimator for landscape contractors. Describe the job in plain English, get a priced materials list, apply your markup, hand the customer a PDF.
+
+> Sign-up is free and takes a few seconds. Your catalog and estimates are scoped to your own account.
+
+
 A materials cost estimator for landscape contractors. Describe the job in plain English, get a priced materials list, apply your markup, hand the customer a PDF.
 
 <img width="944" height="532" alt="Screenshot 2026-09-16 005625" src="https://github.com/user-attachments/assets/dd1b5b4d-777d-41df-84f9-d083b7d4d2be" />
