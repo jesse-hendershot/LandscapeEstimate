@@ -6,7 +6,12 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "tsx --test \"lib/**/*.test.ts\" \"app/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "quarries": "tsx scripts/import-quarries.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.104.0",
@@ -15,6 +20,7 @@
     "drizzle-orm": "^0.45.2",
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.8",
+    "leaflet": "^1.9.4",
     "next": "^15.5.19",
     "react": "19.2.7",
     "react-dom": "19.2.7",
@@ -22,6 +28,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/leaflet": "^1.9.22",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

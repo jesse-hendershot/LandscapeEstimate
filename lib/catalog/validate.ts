@@ -35,6 +35,16 @@ export const createMaterialSchema = z.object({
   sku: z.string().trim().max(80).nullish(),
   coverage: z.string().trim().max(240).default(""),
   notes: z.string().trim().max(600).default(""),
+
+  // ── locality ──
+  supplierId: z.string().uuid().nullish(),
+  /** Substitute group. Same non-empty group = interchangeable on a job. */
+  specClass: z.string().trim().max(80).default(""),
+  /** Off the scale ticket. Typical crushed limestone is ~1.4. */
+  tonsPerCuYd: z.number().min(0.1, "too light — check the number").max(3, "too heavy — check the number").nullish(),
+  haul: z.enum(["auto", "dump", "pickup", "delivered", "none"]).default("auto"),
+  unitsPerPallet: z.number().positive().max(100_000).nullish(),
+  palletDeposit: z.number().min(0).max(500).default(0),
 });
 
 export const updateMaterialSchema = createMaterialSchema

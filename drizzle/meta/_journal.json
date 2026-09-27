@@ -8,6 +8,13 @@
       "when": 1789499721000,
       "tag": "0000_living_serpent_society",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1790539488641,
+      "tag": "0001_locality_engine",
+      "breakpoints": true
     }
   ]
 }

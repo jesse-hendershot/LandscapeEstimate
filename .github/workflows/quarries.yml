@@ -1,0 +1,34 @@
+name: Refresh quarry list
+
+# Rebuilds data/msha-quarries.json from MSHA's federal mine records and commits
+# it if anything changed. Monthly is plenty: quarries open and close slowly.
+
+on:
+  schedule:
+    - cron: "0 14 3 * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npx tsx scripts/import-quarries.ts
+      - name: Commit if changed
+        run: |
+          if git diff --quiet data/msha-quarries.json; then
+            echo "No changes."
+            exit 0
+          fi
+          git config user.name "quarry-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add data/msha-quarries.json
+          git commit -m "Refresh quarry list from MSHA"
+          git push

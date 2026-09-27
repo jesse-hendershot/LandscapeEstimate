@@ -34,13 +34,33 @@ export interface CatalogMaterial {
   unitCost: number;
   supplier: string;
   supplierLocation: string;
+  supplierId: string | null;
   sku: string | null;
   coverage: string;
   notes: string;
+  specClass: string;
+  tonsPerCuYd: number | null;
+  haul: string;
+  unitsPerPallet: number | null;
+  palletDeposit: number;
   isActive: boolean;
   useCount: number;
   priceUpdatedAt: string;
 }
+
+export interface SupplierOption {
+  id: string;
+  name: string;
+  located: boolean;
+}
+
+const HAUL_LABEL: Record<string, string> = {
+  auto: "Automatic",
+  dump: "Dump truck",
+  pickup: "Pickup / store run",
+  delivered: "Supplier delivers",
+  none: "Already on hand",
+};
 
 type RowState = "idle" | "saving" | "saved" | "error";
 
@@ -55,8 +75,19 @@ const inputBase: React.CSSProperties = {
   borderRadius: 3,
 };
 
-export default function CatalogTable({ initial }: { initial: CatalogMaterial[] }) {
+export default function CatalogTable({
+  initial,
+  suppliers,
+}: {
+  initial: CatalogMaterial[];
+  suppliers: SupplierOption[];
+}) {
   const [rows, setRows] = useState<CatalogMaterial[]>(initial);
+  const [scanning, setScanning] = useState(false);
+  const groups = useMemo(
+    () => [...new Set(rows.map((r) => r.specClass).filter(Boolean))].sort(),
+    [rows]
+  );
   const [state, setState] = useState<Record<string, RowState>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [adding, setAdding] = useState(false);
@@ -149,9 +180,11 @@ export default function CatalogTable({ initial }: { initial: CatalogMaterial[] }
       (r) =>
         r.name.toLowerCase().includes(q) ||
         r.category.toLowerCase().includes(q) ||
-        r.supplier.toLowerCase().includes(q)
+        r.supplier.toLowerCase().includes(q) ||
+        r.specClass.toLowerCase().includes(q) ||
+        (suppliers.find((x) => x.id === r.supplierId)?.name.toLowerCase().includes(q) ?? false)
     );
-  }, [rows, query]);
+  }, [rows, query, suppliers]);
 
   const grouped = useMemo(() => {
     const map = new Map<string, CatalogMaterial[]>();
@@ -240,9 +273,42 @@ export default function CatalogTable({ initial }: { initial: CatalogMaterial[] }
         >
           {adding ? "Cancel" : "Add material"}
         </button>
+        <button
+          type="button"
+          onClick={() => setScanning((v) => !v)}
+          style={{
+            background: scanning ? C.white : C.amber,
+            color: C.black,
+            border: `1px solid ${C.amber}`,
+            borderRadius: 4,
+            padding: "8px 16px",
+            fontSize: 14,
+            fontWeight: 600,
+            cursor: "pointer",
+          }}
+        >
+          {scanning ? "Close scanner" : "📷 Scan a receipt"}
+        </button>
       </div>
 
-      {adding && <AddRow onAdd={add} />}
+      {scanning && (
+        <ScanReceipt
+          suppliers={suppliers}
+          onApplied={async () => {
+            const res = await fetch("/api/catalog");
+            if (res.ok) setRows((await res.json()).materials);
+            setScanning(false);
+          }}
+        />
+      )}
+
+      {adding && <AddRow onAdd={add} suppliers={suppliers} />}
+
+      <datalist id="le-groups">
+        {groups.map((g) => (
+          <option key={g} value={g} />
+        ))}
+      </datalist>
 
       {grouped.length === 0 && (
         <p style={{ color: C.grey, fontSize: 14, padding: "24px 0" }}>
@@ -283,14 +349,14 @@ export default function CatalogTable({ initial }: { initial: CatalogMaterial[] }
                   <Th style={{ width: "22%" }}>Material</Th>
                   <Th style={{ width: 92 }}>Unit</Th>
                   <Th style={{ width: 118, textAlign: "right" }}>Your price</Th>
-                  <Th style={{ width: "14%" }}>Supplier</Th>
+                  <Th style={{ width: "16%" }}>Supplier</Th>
                   {/* Coverage gets the slack. It is the longest field and the
                       one that was colliding with its neighbour. */}
                   <Th style={{ width: "auto" }}>Coverage</Th>
                   <Th style={{ width: 116, textAlign: "right", paddingLeft: 16 }}>
                     Price set
                   </Th>
-                  <Th style={{ width: 44 }} />
+                  <Th style={{ width: 80 }} />
                 </tr>
               </thead>
               <tbody>
@@ -298,6 +364,7 @@ export default function CatalogTable({ initial }: { initial: CatalogMaterial[] }
                   <Row
                     key={m.id}
                     m={m}
+                    suppliers={suppliers}
                     state={state[m.id] ?? "idle"}
                     error={errors[m.id] ?? ""}
                     onSave={save}
@@ -317,12 +384,14 @@ export default function CatalogTable({ initial }: { initial: CatalogMaterial[] }
 
 function Row({
   m,
+  suppliers,
   state,
   error,
   onSave,
   onRemove,
 }: {
   m: CatalogMaterial;
+  suppliers: SupplierOption[];
   state: RowState;
   error: string;
   onSave: (id: string, patch: Partial<CatalogMaterial>) => void;
@@ -330,6 +399,7 @@ function Row({
 }) {
   const [price, setPrice] = useState(String(m.unitCost));
   const [confirming, setConfirming] = useState(false);
+  const [open, setOpen] = useState(false);
   const stale = isStale(m.priceUpdatedAt);
 
   // Keep the field in step when the server returns a normalized value.
@@ -398,11 +468,25 @@ function Row({
         </Td>
 
         <Td>
-          <TextCell
-            value={m.supplier}
-            placeholder="who you buy from"
-            onCommit={(v) => v !== m.supplier && onSave(m.id, { supplier: v })}
-          />
+          <select
+            aria-label="Supplier"
+            value={m.supplierId ?? ""}
+            onChange={(e) => onSave(m.id, { supplierId: e.target.value || null })}
+            style={{ ...inputBase, border: `1px solid ${m.supplierId ? C.line : C.amber}`, background: C.white }}
+          >
+            <option value="">{m.supplier ? `${m.supplier} (not linked)` : "— pick supplier —"}</option>
+            {suppliers.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+                {s.located ? "" : " (no address)"}
+              </option>
+            ))}
+          </select>
+          {m.specClass && (
+            <div style={{ fontSize: 11, color: C.green, padding: "2px 6px" }} title="Substitute group">
+              ⇄ {m.specClass}
+            </div>
+          )}
         </Td>
 
         <Td>
@@ -420,6 +504,16 @@ function Row({
         </Td>
 
         <Td>
+          <span style={{ display: "flex", gap: 2, alignItems: "center" }}>
+          <button
+            type="button"
+            onClick={() => setOpen((o) => !o)}
+            title="Group, weight, pallets, hauling"
+            aria-expanded={open}
+            style={miniBtn(open ? C.green : C.grey)}
+          >
+            {open ? "▾" : "⋯"}
+          </button>
           {confirming ? (
             <span style={{ display: "flex", gap: 4 }}>
               <button
@@ -449,8 +543,11 @@ function Row({
               ✕
             </button>
           )}
+          </span>
         </Td>
       </tr>
+
+      {open && <Details m={m} onSave={onSave} />}
 
       {state === "error" && error && (
         <tr style={{ background: "#FDEDEA" }}>
@@ -467,9 +564,13 @@ function Row({
 
 function AddRow({
   onAdd,
+  suppliers,
 }: {
   onAdd: (draft: Partial<CatalogMaterial>) => Promise<string | null>;
+  suppliers: SupplierOption[];
 }) {
+  const [supplierId, setSupplierId] = useState("");
+  const [specClass, setSpecClass] = useState("");
   const [name, setName] = useState("");
   const [category, setCategory] = useState<string>("other");
   const [unit, setUnit] = useState<string>("cu yd");
@@ -487,7 +588,16 @@ function AddRow({
       return;
     }
     setBusy(true);
-    const problem = await onAdd({ name: name.trim(), category, unit, unitCost: cost, supplier, coverage });
+    const problem = await onAdd({
+      name: name.trim(),
+      category,
+      unit,
+      unitCost: cost,
+      supplier: supplier || suppliers.find((x) => x.id === supplierId)?.name || "",
+      coverage,
+      supplierId: supplierId || null,
+      specClass: specClass.trim(),
+    });
     setBusy(false);
     if (problem) setErr(problem);
   };
@@ -553,7 +663,21 @@ function AddRow({
 
       <label style={{ display: "grid", gap: 4 }}>
         <span style={labelStyle}>Supplier</span>
-        <input value={supplier} onChange={(e) => setSupplier(e.target.value)} style={field} />
+        {suppliers.length > 0 ? (
+          <select value={supplierId} onChange={(e) => setSupplierId(e.target.value)} style={field}>
+            <option value="">— pick —</option>
+            {suppliers.map((s) => (
+              <option key={s.id} value={s.id}>{s.name}</option>
+            ))}
+          </select>
+        ) : (
+          <input value={supplier} onChange={(e) => setSupplier(e.target.value)} style={field} />
+        )}
+      </label>
+
+      <label style={{ display: "grid", gap: 4 }}>
+        <span style={labelStyle}>Substitute group</span>
+        <input list="le-groups" value={specClass} onChange={(e) => setSpecClass(e.target.value)} placeholder="e.g. Drain rock" style={field} />
       </label>
 
       <label style={{ display: "grid", gap: 4, gridColumn: "span 2" }}>
@@ -588,6 +712,324 @@ function AddRow({
         <p style={{ gridColumn: "1 / -1", margin: 0, color: C.red, fontSize: 13 }}>{err}</p>
       )}
     </form>
+  );
+}
+
+// ── details row: group, weight, hauling, pallets ───────────────────────────
+
+function Details({
+  m,
+  onSave,
+}: {
+  m: CatalogMaterial;
+  onSave: (id: string, patch: Partial<CatalogMaterial>) => void;
+}) {
+  const bulk = m.unit === "ton" || m.unit === "cu yd";
+  const field: React.CSSProperties = {
+    border: `1px solid ${C.line}`,
+    borderRadius: 4,
+    padding: "7px 9px",
+    fontSize: 13,
+    background: C.white,
+    width: "100%",
+  };
+  const numOrNull = (v: string) => {
+    const n = parseFloat(v);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+
+  return (
+    <tr style={{ background: C.bg }}>
+      <td colSpan={7} style={{ padding: "10px 12px 14px" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 12 }}>
+          <label style={{ display: "grid", gap: 4 }}>
+            <span style={labelStyle}>Substitute group</span>
+            <input
+              list="le-groups"
+              defaultValue={m.specClass}
+              placeholder="e.g. Drain rock"
+              onBlur={(e) => e.target.value.trim() !== m.specClass && onSave(m.id, { specClass: e.target.value.trim() })}
+              style={field}
+            />
+            <span style={{ fontSize: 11, color: C.grey }}>Same group = can stand in for each other. Estimates pick the cheapest delivered.</span>
+          </label>
+
+          {bulk && (
+            <label style={{ display: "grid", gap: 4 }}>
+              <span style={labelStyle}>Weight (tons per cu yd)</span>
+              <input
+                type="number"
+                step="0.01"
+                defaultValue={m.tonsPerCuYd ?? ""}
+                placeholder="typical value"
+                onBlur={(e) => {
+                  const v = numOrNull(e.target.value);
+                  if (v !== m.tonsPerCuYd) onSave(m.id, { tonsPerCuYd: v });
+                }}
+                style={field}
+              />
+              <span style={{ fontSize: 11, color: C.grey }}>Off the scale ticket. Blank uses a typical number for this kind of material.</span>
+            </label>
+          )}
+
+          <label style={{ display: "grid", gap: 4 }}>
+            <span style={labelStyle}>How it gets to the job</span>
+            <select value={m.haul} onChange={(e) => onSave(m.id, { haul: e.target.value })} style={field}>
+              {Object.entries(HAUL_LABEL).map(([k, v]) => (
+                <option key={k} value={k}>
+                  {v}
+                </option>
+              ))}
+            </select>
+            <span style={{ fontSize: 11, color: C.grey }}>Automatic: tons and yards go in the dump truck, everything else is a store run.</span>
+          </label>
+
+          <label style={{ display: "grid", gap: 4 }}>
+            <span style={labelStyle}>{m.unit} per pallet</span>
+            <input
+              type="number"
+              step="any"
+              defaultValue={m.unitsPerPallet ?? ""}
+              placeholder="not on pallets"
+              onBlur={(e) => {
+                const v = numOrNull(e.target.value);
+                if (v !== m.unitsPerPallet) onSave(m.id, { unitsPerPallet: v });
+              }}
+              style={field}
+            />
+          </label>
+
+          <label style={{ display: "grid", gap: 4 }}>
+            <span style={labelStyle}>Pallet deposit ($ each)</span>
+            <input
+              type="number"
+              step="0.01"
+              defaultValue={m.palletDeposit || ""}
+              placeholder="0"
+              onBlur={(e) => {
+                const v = parseFloat(e.target.value) || 0;
+                if (v !== m.palletDeposit) onSave(m.id, { palletDeposit: v });
+              }}
+              style={field}
+            />
+          </label>
+
+          <label style={{ display: "grid", gap: 4, gridColumn: "1 / -1" }}>
+            <span style={labelStyle}>Notes for the estimator</span>
+            <input
+              defaultValue={m.notes}
+              onBlur={(e) => e.target.value.trim() !== m.notes && onSave(m.id, { notes: e.target.value.trim() })}
+              style={field}
+            />
+          </label>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+// ── receipt scanner ────────────────────────────────────────────────────────
+
+interface ScanProposal {
+  line: { description: string; qty: number | null; unit: string | null; unitPrice: number | null };
+  match: { materialId: string; name: string; unit: string; currentUnitCost: number } | null;
+  action: "update" | "new" | "skip";
+  flag: string;
+}
+
+async function toJpeg(file: File, max = 1600): Promise<{ data: string; mediaType: string }> {
+  const bmp = await createImageBitmap(file);
+  const scale = Math.min(1, max / Math.max(bmp.width, bmp.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(bmp.width * scale);
+  canvas.height = Math.round(bmp.height * scale);
+  canvas.getContext("2d")!.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+  const url = canvas.toDataURL("image/jpeg", 0.82);
+  return { data: url.split(",")[1], mediaType: "image/jpeg" };
+}
+
+function ScanReceipt({ suppliers, onApplied }: { suppliers: SupplierOption[]; onApplied: () => void }) {
+  const [busy, setBusy] = useState<"" | "reading" | "applying">("");
+  const [err, setErr] = useState("");
+  const [supplierId, setSupplierId] = useState("");
+  const [newSupplier, setNewSupplier] = useState({ name: "", address: "" });
+  const [rows, setRows] = useState<(ScanProposal & { use: boolean; name: string; unit: string; price: string })[]>([]);
+  const [notes, setNotes] = useState("");
+
+  async function read(files: FileList | null) {
+    if (!files?.length) return;
+    setBusy("reading");
+    setErr("");
+    try {
+      const images = await Promise.all([...files].slice(0, 4).map((f) => toJpeg(f)));
+      const res = await fetch("/api/catalog/scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ images, supplierId: supplierId || undefined }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error ?? "Couldn't read that photo");
+      setSupplierId(j.supplierId ?? "");
+      if (!j.supplierId) setNewSupplier({ name: j.scan.supplier.name, address: j.scan.supplier.address });
+      setNotes(j.scan.notes);
+      setRows(
+        (j.proposals as ScanProposal[]).map((p) => ({
+          ...p,
+          use: p.action !== "skip",
+          name: p.match?.name ?? p.line.description,
+          unit: p.match?.unit ?? p.line.unit ?? "each",
+          price: p.line.unitPrice === null ? "" : String(p.line.unitPrice),
+        }))
+      );
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Couldn't read that photo");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function apply() {
+    const items = rows
+      .filter((r) => r.use && r.action !== "skip" && parseFloat(r.price) > 0)
+      .map((r) =>
+        r.action === "update" && r.match
+          ? { action: "update" as const, materialId: r.match.materialId, unitCost: parseFloat(r.price) }
+          : { action: "new" as const, name: r.name.trim(), unit: r.unit, unitCost: parseFloat(r.price) }
+      );
+    if (!items.length) return;
+    setBusy("applying");
+    setErr("");
+    try {
+      const res = await fetch("/api/catalog/scan/apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          supplierId: supplierId || null,
+          newSupplier: !supplierId && newSupplier.name.trim() ? newSupplier : null,
+          items,
+        }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error ?? "Couldn't apply");
+      onApplied();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Couldn't apply");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  const field: React.CSSProperties = { border: `1px solid ${C.line}`, borderRadius: 4, padding: "7px 9px", fontSize: 13, background: C.white };
+
+  return (
+    <div style={{ background: C.white, border: `1px solid ${C.amber}`, borderRadius: 6, padding: 16, marginBottom: 14 }}>
+      <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>📷 Update prices from a receipt or scale ticket</div>
+      <p style={{ fontSize: 13, color: C.grey, margin: "0 0 12px" }}>
+        Take a photo (or pick one). Nothing changes until you check the rows and hit Apply.
+      </p>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
+        <select aria-label="Supplier" value={supplierId} onChange={(e) => setSupplierId(e.target.value)} style={field}>
+          <option value="">Supplier: figure it out from the receipt</option>
+          {suppliers.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name}
+            </option>
+          ))}
+        </select>
+        <label style={{ background: C.green, color: C.white, borderRadius: 4, padding: "8px 14px", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+          {busy === "reading" ? "Reading…" : "Choose photo"}
+          <input type="file" accept="image/*" capture="environment" multiple hidden onChange={(e) => read(e.target.files)} disabled={busy !== ""} />
+        </label>
+      </div>
+      {err && <div style={{ color: C.red, fontSize: 13, marginBottom: 8 }}>{err}</div>}
+
+      {rows.length > 0 && (
+        <>
+          {!supplierId && (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10, fontSize: 13 }}>
+              <span style={{ alignSelf: "center" }}>New supplier:</span>
+              <input aria-label="New supplier name" value={newSupplier.name} onChange={(e) => setNewSupplier({ ...newSupplier, name: e.target.value })} placeholder="Name" style={field} />
+              <input aria-label="New supplier address" value={newSupplier.address} onChange={(e) => setNewSupplier({ ...newSupplier, address: e.target.value })} placeholder="Address (for distances)" style={{ ...field, flex: 1, minWidth: 200 }} />
+            </div>
+          )}
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 700 }}>
+              <thead>
+                <tr style={{ background: C.lgn, textAlign: "left" }}>
+                  <Th style={{ width: 40 }} />
+                  <Th>On the receipt</Th>
+                  <Th>Goes to</Th>
+                  <Th style={{ width: 110 }}>Price / unit</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr key={i} style={{ borderTop: `1px solid ${C.line}`, opacity: r.use ? 1 : 0.5 }}>
+                    <Td>
+                      <input
+                        type="checkbox"
+                        aria-label="Apply this row"
+                        checked={r.use}
+                        disabled={r.action === "skip"}
+                        onChange={(e) => setRows((all) => all.map((x, j) => (j === i ? { ...x, use: e.target.checked } : x)))}
+                      />
+                    </Td>
+                    <Td>
+                      <div>{r.line.description}</div>
+                      <div style={{ color: C.grey }}>
+                        {r.line.qty ?? "?"} {r.line.unit ?? ""}
+                      </div>
+                    </Td>
+                    <Td>
+                      {r.action === "update" && r.match ? (
+                        <div>
+                          <b>{r.match.name}</b>
+                          <div style={{ color: C.grey }}>
+                            now ${r.match.currentUnitCost.toFixed(2)} / {r.match.unit}
+                          </div>
+                        </div>
+                      ) : r.action === "new" ? (
+                        <div style={{ display: "flex", gap: 6 }}>
+                          <input aria-label="New material name" value={r.name} onChange={(e) => setRows((all) => all.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))} style={{ ...field, flex: 1 }} />
+                          <select aria-label="Unit" value={r.unit} onChange={(e) => setRows((all) => all.map((x, j) => (j === i ? { ...x, unit: e.target.value } : x)))} style={field}>
+                            {UNITS.map((u) => (
+                              <option key={u} value={u}>{u}</option>
+                            ))}
+                          </select>
+                        </div>
+                      ) : (
+                        <span style={{ color: C.grey }}>skipped</span>
+                      )}
+                      {r.flag && <div style={{ color: "#8a5a00", marginTop: 2 }}>{r.flag}</div>}
+                      {r.action === "new" && <div style={{ color: C.grey, marginTop: 2 }}>New material</div>}
+                    </Td>
+                    <Td>
+                      <input
+                        aria-label="Unit price"
+                        type="number"
+                        step="0.01"
+                        value={r.price}
+                        onChange={(e) => setRows((all) => all.map((x, j) => (j === i ? { ...x, price: e.target.value } : x)))}
+                        style={{ ...field, width: 100, textAlign: "right" }}
+                      />
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {notes && <div style={{ fontSize: 12, color: C.grey, marginTop: 8 }}>Note from the reader: {notes}</div>}
+          <button
+            type="button"
+            onClick={apply}
+            disabled={busy !== ""}
+            style={{ marginTop: 12, background: C.green, color: C.white, border: "none", borderRadius: 4, padding: "9px 18px", fontSize: 14, fontWeight: 600, cursor: "pointer" }}
+          >
+            {busy === "applying" ? "Applying…" : `Apply ${rows.filter((r) => r.use && r.action !== "skip").length} change(s)`}
+          </button>
+        </>
+      )}
+    </div>
   );
 }
 

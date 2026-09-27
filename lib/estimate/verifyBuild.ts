@@ -273,6 +273,21 @@ export function gateCatalogCoverage(built: BuiltEstimate): GateResult[] {
   ];
 }
 
+export function gateDimsMismatch(built: BuiltEstimate): GateResult[] {
+  if (!built.qtyMismatches || built.qtyMismatches.length === 0) {
+    return [pass("dims", "model quantities agree with its own dimensions")];
+  }
+  // Not an error: the computed number is the one used. Worth showing, because
+  // a big gap means the model misread the job, not just mis-multiplied.
+  const detail = built.qtyMismatches
+    .map(
+      (m) =>
+        `"${m.material}": model said ${fromMilli(m.modelQtyMilli)} ${m.unit}, its dimensions work out to ${fromMilli(m.computedQtyMilli)} — used ${fromMilli(m.computedQtyMilli)}`
+    )
+    .join("; ");
+  return [fail("dims", detail, { repairable: false, severity: "warn" })];
+}
+
 // ── runner ─────────────────────────────────────────────────────────────────
 
 export interface BuildVerdict {
@@ -293,6 +308,7 @@ export function verifyBuild(built: BuiltEstimate): BuildVerdict {
     ...gateQuantities(built),
     ...gateBounds(built),
     ...gateCatalogCoverage(built),
+    ...gateDimsMismatch(built),
   ];
 
   const errors = gates.filter((g) => !g.passed && g.severity === "error");
@@ -320,5 +336,5 @@ export function repairInstruction(errors: GateResult[], built: BuiltEstimate): s
 
 ${bullets.join("\n")}
 
-Return the COMPLETE corrected JSON in the same format. Fix only what is listed — keep every line that was not flagged, with the same quantities and sources. Remember: no tax row, no totals, no prices on catalog_lines.`;
+Return the COMPLETE corrected JSON in the same format. Fix only what is listed — keep every line that was not flagged, with the same quantities, dims and sources. Remember: no tax row, no totals, no prices on catalog_lines.`;
 }

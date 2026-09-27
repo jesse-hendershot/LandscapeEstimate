@@ -49,12 +49,21 @@ NEXT_PUBLIC_CLERK_SIGN_UP_URL=/sign-up
 ## 5. Create the tables
 
 ```bash
-npx drizzle-kit generate    # writes ./drizzle/0000_*.sql — read it
-npx drizzle-kit migrate     # applies it
+npm run db:migrate
 ```
 
-Read the generated SQL before applying. It's short, and it's the one moment
-you'd catch a schema mistake cheaply.
+This applies every file in `./drizzle` in order. Read the SQL first — it's
+short, and it's the one moment you'd catch a schema mistake cheaply.
+
+### Upgrading a running deployment
+
+Run the migration against the production database **before** the new code
+deploys. Migrations here only ever add tables and columns, so the old code keeps
+working against the new schema; the new code does not work against the old one.
+
+```bash
+DATABASE_URL="<production pooled string>" npm run db:migrate
+```
 
 ## 6. Run it
 
@@ -98,23 +107,31 @@ Send your boss the URL. He signs up with the email you allowlisted.
 
 ---
 
+## First things to set up in the app
+
+1. **Settings** — the shop address (every job adds a round trip from here per
+   truck), and your real trucks: what each carries in tons and cubic yards, its
+   mpg, and what an hour of truck + driver costs you, not counting fuel.
+2. **Suppliers** — the places you buy from, with addresses. The quarry finder
+   lists every active quarry and gravel pit near you from federal records.
+3. **Materials** — link each material to its supplier (the ⋯ button opens the
+   rest: substitute group, weight per yard, pallet size and deposit). Materials
+   in the same substitute group can stand in for each other; estimates pick the
+   cheapest one delivered to the job.
+
+Two optional free keys make distances and diesel sharper — see the README's
+"Optional keys and tuning". Add them in Vercel's environment variables.
+
 ## What still needs doing
 
-**The UI hasn't been rebuilt yet.** `app/page.tsx` still works — the API returns
-the same shape it always did — but there's no catalog screen. You can add and
-price materials through the API, and the seeded catalog gets you running, but
-your boss can't edit prices without one. That's the next build.
+**Parcel data is Johnson County only.** Linn County's public parcel service
+wasn't reachable when this was built; outside Johnson County the map still has
+aerials and measuring, just no lot lines. Adding a county is one entry in
+`lib/site/sources.ts`.
 
-**`/api/refine` is still ungated.** It mutates line items with no validation,
-which means an estimate can pass every gate and then be changed into one that
-wouldn't. `lib/estimate/gates.ts` operates on exactly the `LineItem[]` shape
-refine deals in, so it's the right guard to point at it.
-
-**Nothing has run against a real job yet.** Everything is tested against
-fixtures. Run five or six real past jobs where you know the true cost, and
-compare. That's the only way to find out whether the quantity logic is right.
-
----
+**Nothing learns from the correction log yet.** Every edit to a generated
+estimate is recorded in `line_edits`. That's the training data; the model that
+uses it is a later build.
 
 ## Notes on a couple of decisions
 
