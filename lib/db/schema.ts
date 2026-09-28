@@ -250,6 +250,17 @@ export const materials = pgTable(
     priceUpdatedAt: timestamp("price_updated_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    /**
+     * Where the current price came from:
+     *   starter  — the app's placeholder, not from any supplier yet
+     *   sheet    — the supplier's own price list
+     *   receipt  — a receipt, invoice or scale ticket
+     *   manual   — typed in by the shop
+     * Estimates prefer supplier-backed prices and flag starter ones.
+     */
+    priceSource: text("price_source").notNull().default("manual"),
+    /** "Conklin Quarry price sheet, 2026-09-29" */
+    priceSourceLabel: text("price_source_label").notNull().default(""),
 
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -261,6 +272,32 @@ export const materials = pgTable(
     // prices is the ambiguity the whole catalog exists to remove.
     uniqueIndex("materials_owner_name_idx").on(t.ownerId, t.name),
   ]
+);
+
+/**
+ * Every price a material has had, and where each came from. The catalog holds
+ * the current one; this is the paper trail — what Conklin charged in March
+ * versus now, and which sheet or receipt said so.
+ */
+export const priceHistory = pgTable(
+  "price_history",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    ownerId: text("owner_id").notNull(),
+    materialId: uuid("material_id")
+      .notNull()
+      .references(() => materials.id, { onDelete: "cascade" }),
+    supplierId: uuid("supplier_id").references(() => suppliers.id, { onDelete: "set null" }),
+    unitCostCents: integer("unit_cost_cents").notNull(),
+    unit: text("unit").notNull(),
+    /** starter | sheet | receipt | manual */
+    source: text("source").notNull(),
+    sourceLabel: text("source_label").notNull().default(""),
+    /** Date printed on the sheet or receipt, YYYY-MM-DD, when there was one. */
+    observedOn: text("observed_on").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("price_history_owner_material_idx").on(t.ownerId, t.materialId)]
 );
 
 // ── estimates ──────────────────────────────────────────────────────────────
@@ -382,6 +419,9 @@ export const estimateLines = pgTable(
     miles: doublePrecision("miles"),
     /** Other members of the substitute class, priced delivered to this job. */
     alternatives: jsonb("alternatives").$type<unknown>(),
+    /** Where this line's price came from when the estimate was built (see materials.priceSource). */
+    priceSource: text("price_source").notNull().default(""),
+    priceLabel: text("price_label").notNull().default(""),
 
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -514,6 +554,7 @@ export type NewEquipmentRow = typeof equipment.$inferInsert;
 export type Supplier = typeof suppliers.$inferSelect;
 export type NewSupplier = typeof suppliers.$inferInsert;
 export type Material = typeof materials.$inferSelect;
+export type PriceHistoryRow = typeof priceHistory.$inferSelect;
 export type NewMaterial = typeof materials.$inferInsert;
 export type EstimateRow = typeof estimates.$inferSelect;
 export type NewEstimateRow = typeof estimates.$inferInsert;

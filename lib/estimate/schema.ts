@@ -93,6 +93,10 @@ export interface LineItem {
   saved?: number;
   /** Name of the material this line replaced, if a substitute won. */
   replaced?: string;
+  /** starter | sheet | receipt | manual | research — where the price came from. */
+  priceSource?: string;
+  /** "Conklin Quarry price sheet, 2026-09-29" */
+  priceLabel?: string;
 }
 
 /** A substitute the estimator can swap in, priced delivered to this job. */
@@ -112,6 +116,9 @@ export interface LineAlternative {
   miles: number | null;
   milesApprox: boolean;
   source: string;
+  /** "starter" marks a placeholder price, not a supplier's. */
+  priceSource?: string;
+  priceLabel?: string;
 }
 
 export interface Estimate {

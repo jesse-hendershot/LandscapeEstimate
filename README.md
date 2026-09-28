@@ -54,7 +54,13 @@ Type an address and the app pulls the lot from the county's parcel records (John
 
 ### Finding suppliers
 
-Every active quarry and sand & gravel pit registered with the federal Mine Safety and Health Administration is searchable by distance from the shop or a job, and can be added as a supplier in one click. Photos of receipts and scale tickets update catalog prices: the model reads the paper, a person ticks which changes to apply.
+Every active quarry and sand & gravel pit registered with the federal Mine Safety and Health Administration is searchable by distance from the shop or a job, and can be added as a supplier in one click.
+
+### Supplier prices first
+
+Every catalog price says where it came from: a supplier's **price sheet**, a **receipt** or scale ticket, a price typed **by hand**, or a **starter** placeholder from the default catalog. Import a quarry's price list (photos, a PDF, or text pasted from their email or website) or a receipt from the Materials page: the model reads the paper, a person ticks which rows to apply, and each price lands tied to that supplier and labelled ("Conklin Quarry price sheet, 2026-09-29"). One supplier's sheet never reprices another supplier's material, and every change is kept in price history.
+
+On an estimate, a starter price never beats a supplier's real one: when a substitute group has both, the supplier's price is used even if the placeholder looks cheaper, and the line says so. Every line shows its source tag (sheet, receipt, by hand, starter, or looked up online), and the estimate warns about any line still on a starter price.
 
 ### Field test
 
@@ -140,7 +146,7 @@ Open `http://localhost:3000`, create an account, and generate an estimate. A sta
 
 1. **Settings** — shop address, trailers, your real trucks (fuel, mpg, cost per hour, which trailer each pulls), and machines (fuel burn, which trailer they ride on).
 2. **Suppliers** — add where you buy, or find quarries near you.
-3. **Materials** — link each material to its supplier, set substitute groups, correct prices (or scan a receipt).
+3. **Materials** — link each material to its supplier, set substitute groups, correct prices, or import a supplier's price sheet or receipt.
 
 ## Optional keys and tuning
 
@@ -151,7 +157,7 @@ Open `http://localhost:3000`, create an account, and generate an estimate. A sta
 | `ESTIMATE_MODEL` | Model for the main call. Defaults to the top tier. |
 | `ESTIMATE_REPAIR_MODEL` | Model for the repair pass. Defaults to `ESTIMATE_MODEL`. |
 | `ESTIMATE_SEARCH_FIRST` | Set to `false` to skip web search on the first pass. |
-| `SCAN_MODEL` | Model for reading receipts. Defaults to `ESTIMATE_MODEL`. |
+| `SCAN_MODEL` | Model for reading price sheets and receipts. Defaults to `ESTIMATE_MODEL`. |
 
 Every estimate run is logged to `estimate_runs` with gates tripped, catalog vs researched line counts, latency and token usage — so cost and quality are measurable rather than guessed at.
 
@@ -161,7 +167,7 @@ Every estimate run is logged to `estimate_runs` with gates tripped, catalog vs r
 npm test
 ```
 
-118 tests: money and gates, earthwork conversions, the haul planner and substitute ranking (including the worked example from the first field feedback), public-data parsers against captured live responses, receipt matching, the correction diff, and the screen's live totals against the server's cents. No network or database needed. The same suite runs in GitHub Actions on every push.
+148 tests: money and gates, earthwork conversions, the haul planner and substitute ranking (including the worked example from the first field feedback), public-data parsers against captured live responses, price-sheet and receipt matching (including supplier scoping), starter-versus-supplier ranking, the correction diff, and the screen's live totals against the server's cents. No network or database needed. The same suite runs in GitHub Actions on every push.
 
 ## Status
 

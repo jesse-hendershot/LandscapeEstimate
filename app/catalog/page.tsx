@@ -8,7 +8,9 @@ import CatalogTable from "./CatalogTable";
 // Prices change; never serve a cached copy of them.
 export const dynamic = "force-dynamic";
 
-export default async function CatalogPage() {
+export default async function CatalogPage({ searchParams }: { searchParams: Promise<{ import?: string }> }) {
+  const sp = await searchParams;
+  const openImport = sp.import === "sheet" || sp.import === "receipt" ? sp.import : undefined;
   // requireProfile rather than requireOwner: it creates the profile row on
   // first sight, so an account never has a catalog without markup and tax.
   const { id: ownerId } = await requireProfile();
@@ -23,6 +25,7 @@ export default async function CatalogPage() {
       <CatalogTable
         initial={rows.map(presentMaterial)}
         suppliers={suppliers.map((s) => ({ id: s.id, name: s.name, located: s.lat !== null && s.lng !== null }))}
+        openImport={openImport}
       />
     </main>
   );

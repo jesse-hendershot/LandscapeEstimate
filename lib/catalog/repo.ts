@@ -10,7 +10,7 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 
 import { db } from "../db";
-import { materials, type Material, type NewMaterial } from "../db/schema";
+import { materials, priceHistory, type Material, type NewMaterial } from "../db/schema";
 import { seedRowsFor } from "./seed";
 
 export async function listMaterials(
@@ -41,30 +41,70 @@ export async function getMaterial(ownerId: string, id: string): Promise<Material
 
 export async function createMaterial(
   ownerId: string,
-  input: Omit<NewMaterial, "ownerId" | "id">
+  input: Omit<NewMaterial, "ownerId" | "id">,
+  opts: { observedOn?: string } = {}
 ): Promise<Material> {
   const [row] = await db
     .insert(materials)
     .values({ ...input, ownerId })
     .returning();
+  await recordPrice(ownerId, row, opts.observedOn);
   return row;
+}
+
+/** Append the material's current price to its history. Never fails the caller. */
+export async function recordPrice(ownerId: string, m: Material, observedOn = ""): Promise<void> {
+  try {
+    await db.insert(priceHistory).values({
+      ownerId,
+      materialId: m.id,
+      supplierId: m.supplierId,
+      unitCostCents: m.unitCostCents,
+      unit: m.unit,
+      source: m.priceSource,
+      sourceLabel: m.priceSourceLabel,
+      observedOn,
+    });
+  } catch (err) {
+    console.error("price history write failed", { materialId: m.id, err });
+  }
+}
+
+export async function priceHistoryFor(ownerId: string, materialId: string, limit = 20) {
+  return db
+    .select()
+    .from(priceHistory)
+    .where(and(eq(priceHistory.ownerId, ownerId), eq(priceHistory.materialId, materialId)))
+    .orderBy(desc(priceHistory.createdAt))
+    .limit(limit);
 }
 
 export async function updateMaterial(
   ownerId: string,
   id: string,
-  patch: Partial<Omit<NewMaterial, "ownerId" | "id">>
+  patch: Partial<Omit<NewMaterial, "ownerId" | "id">>,
+  opts: { observedOn?: string } = {}
 ): Promise<Material | null> {
   const next: Record<string, unknown> = { ...patch, updatedAt: new Date() };
   // A price change stamps its own timestamp so you can see at a glance which
-  // catalog entries have gone stale.
-  if (patch.unitCostCents !== undefined) next.priceUpdatedAt = new Date();
+  // catalog entries have gone stale — and says where the new price came from.
+  // A price typed into the catalog is the shop's own ("manual") unless the
+  // caller (a price sheet or receipt import) says otherwise.
+  const priced = patch.unitCostCents !== undefined;
+  if (priced) {
+    next.priceUpdatedAt = new Date();
+    if (patch.priceSource === undefined) {
+      next.priceSource = "manual";
+      next.priceSourceLabel = "Entered by hand";
+    }
+  }
 
   const [row] = await db
     .update(materials)
     .set(next)
     .where(and(eq(materials.ownerId, ownerId), eq(materials.id, id)))
     .returning();
+  if (row && priced) await recordPrice(ownerId, row, opts.observedOn);
   return row ?? null;
 }
 

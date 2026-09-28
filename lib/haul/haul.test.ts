@@ -240,3 +240,43 @@ test("missing trucks and locations produce warnings, never silent zeros", () => 
   assert.ok(plan.warnings.some((w) => /No dump truck/.test(w)));
   assert.ok(plan.warnings.some((w) => /No location/.test(w)));
 });
+
+// ── supplier prices beat starter placeholders ──────────────────────────────
+
+test("a starter-priced pick gives way to a supplier's real price, even a dearer one", () => {
+  const starter = drainRock({ id: "starter", supplierId: "sA", supplierName: "Quarry A", unitCostCents: 1500, priceSource: "starter" });
+  const sheet = drainRock({ id: "sheet", supplierId: "sA", supplierName: "Quarry A", unitCostCents: 2600, priceSource: "sheet" });
+  const r = rankSubstitutes(starter, 20_000, [starter, sheet], ctx());
+  assert.equal(r.switched, true);
+  assert.equal(r.reason, "supplier_price");
+  assert.equal(r.chosen.materialId, "sheet");
+  assert.equal(r.savedCents, 0); // dearer: no saving claimed
+  assert.equal(r.alternatives[0].priceSource, "starter"); // still offered, marked
+});
+
+test("a cheap starter placeholder never displaces a real price", () => {
+  const sheet = drainRock({ id: "sheet", supplierId: "sA", supplierName: "Quarry A", unitCostCents: 2600, priceSource: "sheet" });
+  const starter = drainRock({ id: "starter", supplierId: "sA", supplierName: "Quarry A", unitCostCents: 900, priceSource: "starter" });
+  const r = rankSubstitutes(sheet, 20_000, [sheet, starter], ctx());
+  assert.equal(r.switched, false);
+  assert.equal(r.reason, null);
+  assert.equal(r.chosen.materialId, "sheet");
+});
+
+test("among real prices the cheapest delivered still wins", () => {
+  const farSheet = { ...FAR, priceSource: "sheet" };
+  const nearReceipt = { ...NEAR, priceSource: "receipt" };
+  const starter = drainRock({ id: "starter", supplierId: "sA", supplierName: "Quarry A", unitCostCents: 500, priceSource: "starter" });
+  const r = rankSubstitutes(farSheet, 20_000, [farSheet, nearReceipt, starter], ctx());
+  assert.equal(r.reason, "cheaper");
+  assert.equal(r.chosen.materialId, "near");
+  assert.equal(r.savedCents, 8_532);
+});
+
+test("with only starter prices in the group, the old cheapest-delivered rule applies", () => {
+  const a = { ...FAR, priceSource: "starter" };
+  const b = { ...NEAR, priceSource: "starter" };
+  const r = rankSubstitutes(a, 20_000, [a, b], ctx());
+  assert.equal(r.reason, "cheaper");
+  assert.equal(r.chosen.materialId, "near");
+});

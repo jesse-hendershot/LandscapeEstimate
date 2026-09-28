@@ -371,3 +371,43 @@ test("no job location: machine fuel still counts", async () => {
   );
   assert.equal(built.machineCents, 1029);
 });
+
+// ── supplier prices over starter placeholders ──────────────────────────────
+
+test("a starter pick is swapped for the supplier's sheet price, labelled, with no savings claim", async () => {
+  const catalog = [
+    mat({ id: "st", name: "Drain rock (starter)", supplierId: "sA", specClass: "Drain rock", unitCostCents: 1500, priceSource: "starter", priceSourceLabel: "Starter price" }),
+    mat({
+      id: "sh",
+      name: "1 in clean limestone",
+      supplierId: "sB",
+      specClass: "Drain rock",
+      unitCostCents: 2650,
+      priceSource: "sheet",
+      priceSourceLabel: "Quarry B price sheet, 2026-09-29",
+    }),
+  ];
+  const built0 = buildEstimate({ catalog_lines: [{ catalogId: "st", qty: 10 }] }, catalog, OPTS);
+  assert.equal(built0.lines[0].priceSource, "starter");
+  const { built, detail } = await run({ catalog_lines: [] }, { built: built0, catalog });
+  const line = built.lines[0];
+  assert.equal(line.materialId, "sh");
+  assert.equal(line.priceSource, "sheet");
+  assert.equal(line.priceLabel, "Quarry B price sheet, 2026-09-29");
+  assert.equal(line.savedCents, undefined);
+  assert.match(line.basis, /used Quarry B's actual price instead of the starter price/);
+  assert.equal(detail.switched[0].reason, "supplier_price");
+  assert.equal(line.alternatives?.[0].priceSource, "starter");
+
+  const items = toLineItems(built, OPTS.taxRateBps, OPTS);
+  assert.equal(items[0].priceSource, "sheet");
+});
+
+test("researched lines say they weren't priced by a supplier", async () => {
+  const built = buildEstimate(
+    { custom_lines: [{ name: "Hydrangea 3 gal", qty: 4, unit: "each", low: 30, high: 40, source: "Some nursery" }] },
+    CATALOG,
+    OPTS
+  );
+  assert.equal(built.lines[0].priceSource, "research");
+});

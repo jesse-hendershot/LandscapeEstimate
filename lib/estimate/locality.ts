@@ -78,6 +78,7 @@ export function toCandidate(m: Material, suppliersById: Map<string, Supplier>): 
     supplierId: m.supplierId ?? null,
     supplierName: s?.name ?? m.supplier ?? "",
     deliveryFeeCents: s?.deliveryFeeCents ?? 0,
+    priceSource: m.priceSource ?? "manual",
   };
 }
 
@@ -136,7 +137,7 @@ export interface HaulDetail {
     mobilization?: { name: string; truckName: string; trips: number; miles: number; cents: number }[];
     lines: { material: string; mode: string; loads: number; miles: number; haulCents: number; oneWayMiles: number | null; approx: boolean }[];
   } | null;
-  switched: { from: string; to: string; savedCents: number }[];
+  switched: { from: string; to: string; savedCents: number; reason?: "cheaper" | "supplier_price" }[];
   warnings: string[];
 }
 
@@ -219,7 +220,7 @@ async function gatherDistances(args: LocalityArgs, job: LatLng) {
   return { bySupplier, byTownText, bySource, sourceSupplier, shopMiles, anyRoad };
 }
 
-function toAlternative(p: Priced): LineAlternative {
+function toAlternative(p: Priced, materialById: Map<string, Material>): LineAlternative {
   return {
     materialId: p.materialId,
     material: p.name,
@@ -233,6 +234,8 @@ function toAlternative(p: Priced): LineAlternative {
     miles: p.distance?.miles ?? null,
     milesApprox: p.distance ? p.distance.approx || p.distance.basis !== "supplier" : true,
     source: p.supplierName || "Your catalog",
+    priceSource: p.priceSource,
+    priceLabel: materialById.get(p.materialId)?.priceSourceLabel ?? "",
   };
 }
 
@@ -338,7 +341,7 @@ export async function applyLocality(
 
     const next: BuiltLine = {
       ...l,
-      alternatives: r.alternatives.map(toAlternative),
+      alternatives: r.alternatives.map((p) => toAlternative(p, materialById)),
       supplierId: chosen.supplierId,
       miles: chosen.distance?.miles ?? null,
       milesApprox: chosen.distance ? chosen.distance.approx || chosen.distance.basis !== "supplier" : true,
@@ -352,9 +355,19 @@ export async function applyLocality(
       next.unitHighCents = chosenMat.unitCostCents;
       next.source = chosen.supplierName || "Your catalog";
       next.replaced = l.material;
-      next.savedCents = r.savedCents;
-      next.basis = `${l.basis ? l.basis + " — " : ""}substituted for ${l.material}: $${(r.savedCents / 100).toFixed(2)} cheaper delivered`;
-      switched.push({ from: l.material, to: chosenMat.name, savedCents: r.savedCents });
+      next.priceSource = chosenMat.priceSource ?? "manual";
+      next.priceLabel = chosenMat.priceSourceLabel ?? "";
+      const who = chosen.supplierName || "your supplier";
+      if (r.reason === "supplier_price") {
+        // A real price replacing a placeholder — not a saving, so don't claim one.
+        // No savings line on the table: this is about trusting the number.
+        next.savedCents = undefined;
+        next.basis = `${l.basis ? l.basis + " — " : ""}used ${who}'s actual price instead of the starter price for ${l.material}`;
+      } else {
+        next.savedCents = r.savedCents;
+        next.basis = `${l.basis ? l.basis + " — " : ""}substituted for ${l.material}: $${(r.savedCents / 100).toFixed(2)} cheaper delivered`;
+      }
+      switched.push({ from: l.material, to: chosenMat.name, savedCents: r.savedCents, reason: r.reason ?? "cheaper" });
     } else {
       const s = chosen.supplierId ? suppliersById.get(chosen.supplierId) : undefined;
       if (s) next.source = s.name;

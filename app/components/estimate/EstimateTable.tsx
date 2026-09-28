@@ -13,6 +13,7 @@
 import { Fragment, useEffect, useState } from "react";
 
 import { C } from "../../theme";
+import PriceTag from "../PriceTag";
 import { fmt } from "./totals";
 import type { LineAlternative, LineItem } from "./types";
 
@@ -104,6 +105,11 @@ function Alternatives({
                     {a.supplier || "Your catalog"}
                     {a.miles !== null && ` · ${miles(a.miles, a.milesApprox)}`} · {a.qty} {a.unit} @ ${fmt(a.unitCost)}
                   </div>
+                  {a.priceSource && (
+                    <div style={{ marginTop: 3 }}>
+                      <PriceTag source={a.priceSource} label={a.priceLabel} small wrap />
+                    </div>
+                  )}
                 </div>
                 <div style={{ textAlign: "right" }}>
                   <div>
@@ -127,6 +133,26 @@ function Alternatives({
       )}
     </div>
   );
+}
+
+/** Why the server swapped the model's pick: cheaper delivered, or a real supplier price. */
+function SwitchNote({ item }: { item: LineItem }) {
+  if (!item.replaced) return null;
+  if (item.saved) {
+    return (
+      <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>
+        ✓ Closer option picked: replaces {item.replaced}, saves ${fmt(item.saved)} delivered
+      </div>
+    );
+  }
+  if (item.priceSource && item.priceSource !== "starter" && item.priceSource !== "research") {
+    return (
+      <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>
+        ✓ Supplier&apos;s price used instead of the starter price for {item.replaced}
+      </div>
+    );
+  }
+  return null;
 }
 
 export default function EstimateTable({
@@ -159,6 +185,8 @@ export default function EstimateTable({
           miles: cur.miles ?? null,
           milesApprox: Boolean(cur.milesApprox),
           source: cur.source,
+          priceSource: cur.priceSource,
+          priceLabel: cur.priceLabel,
         }
       : null;
     const others = (cur.alternatives ?? []).filter((a) => a.materialId !== alt.materialId);
@@ -178,8 +206,14 @@ export default function EstimateTable({
       alternatives: back ? [back, ...others] : others,
       replaced: undefined,
       saved: undefined,
+      priceSource: alt.priceSource,
+      priceLabel: alt.priceLabel,
     });
   };
+
+  /** A price typed here is the estimator's own, whatever it was before. */
+  const setPrice = (i: number, patch: Pick<LineItem, "low"> | Pick<LineItem, "high">) =>
+    update(i, { ...patch, priceSource: "manual", priceLabel: "Changed on this estimate" });
 
   const remove = (i: number) => onChange(items.filter((_, j) => j !== i));
 
@@ -214,8 +248,8 @@ export default function EstimateTable({
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
               <Cell label="Quantity" type="number" value={item.qty} onChange={(v) => update(i, { qty: num(v) })} width={0} />
               <Cell label="Unit" value={item.unit} onChange={(v) => update(i, { unit: v })} width={0} />
-              <Cell label="Low price" type="number" prefix="$" value={item.low} onChange={(v) => update(i, { low: num(v) })} width={0} />
-              <Cell label="High price" type="number" prefix="$" value={item.high} onChange={(v) => update(i, { high: num(v) })} width={0} />
+              <Cell label="Low price" type="number" prefix="$" value={item.low} onChange={(v) => setPrice(i, { low: num(v) })} width={0} />
+              <Cell label="High price" type="number" prefix="$" value={item.high} onChange={(v) => setPrice(i, { high: num(v) })} width={0} />
             </div>
             <Cell label="Source" value={item.source} onChange={(v) => update(i, { source: v })} width={0} />
             {(item.miles !== undefined && item.miles !== null) || item.haul ? (
@@ -224,11 +258,12 @@ export default function EstimateTable({
                 {item.haul ? ` · haul $${fmt(item.haul)}` : ""}
               </div>
             ) : null}
-            {item.replaced && item.saved ? (
-              <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>
-                ✓ Closer option picked: replaces {item.replaced}, saves ${fmt(item.saved)} delivered
+            {item.priceSource && (
+              <div>
+                <PriceTag source={item.priceSource} label={item.priceLabel} />
               </div>
-            ) : null}
+            )}
+            <SwitchNote item={item} />
             {item.basis && <div style={{ fontSize: 13, color: C.grey, lineHeight: 1.4 }}>{item.basis}</div>}
             <Alternatives item={item} onUse={(a) => swap(i, a)} />
           </div>
@@ -255,7 +290,7 @@ export default function EstimateTable({
           </thead>
           <tbody>
             {items.map((item, i) => {
-              const extra = Boolean(item.basis || (item.replaced && item.saved) || item.alternatives?.length);
+              const extra = Boolean(item.basis || item.replaced || item.alternatives?.length);
               return (
                 <Fragment key={i}>
                   <tr style={{ borderTop: "1px solid #eee", verticalAlign: "top" }}>
@@ -269,10 +304,10 @@ export default function EstimateTable({
                       <Cell label="Unit" value={item.unit} onChange={(v) => update(i, { unit: v })} width={70} />
                     </td>
                     <td style={{ padding: "8px 6px 4px" }}>
-                      <Cell label="Low price" type="number" prefix="$" value={item.low} onChange={(v) => update(i, { low: num(v) })} width={84} />
+                      <Cell label="Low price" type="number" prefix="$" value={item.low} onChange={(v) => setPrice(i, { low: num(v) })} width={84} />
                     </td>
                     <td style={{ padding: "8px 6px 4px" }}>
-                      <Cell label="High price" type="number" prefix="$" value={item.high} onChange={(v) => update(i, { high: num(v) })} width={84} />
+                      <Cell label="High price" type="number" prefix="$" value={item.high} onChange={(v) => setPrice(i, { high: num(v) })} width={84} />
                     </td>
                     <td style={{ padding: "8px 6px 4px", minWidth: 170 }}>
                       <Cell label="Source" value={item.source} onChange={(v) => update(i, { source: v })} width={160} />
@@ -282,6 +317,11 @@ export default function EstimateTable({
                           {item.haul ? ` · haul $${fmt(item.haul)}` : ""}
                         </div>
                       ) : null}
+                      {item.priceSource && (
+                        <div style={{ marginTop: 4, maxWidth: 220 }}>
+                          <PriceTag source={item.priceSource} label={item.priceLabel} small wrap />
+                        </div>
+                      )}
                     </td>
                     <td style={{ padding: "8px 6px 4px" }}>
                       <button
@@ -297,11 +337,7 @@ export default function EstimateTable({
                   {extra && (
                     <tr>
                       <td colSpan={7} style={{ padding: "0 12px 10px" }}>
-                        {item.replaced && item.saved ? (
-                          <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>
-                            ✓ Closer option picked: replaces {item.replaced}, saves ${fmt(item.saved)} delivered
-                          </div>
-                        ) : null}
+                        <SwitchNote item={item} />
                         {item.basis && <div style={{ marginTop: 2, fontSize: 13, color: C.grey, lineHeight: 1.4 }}>{item.basis}</div>}
                         <Alternatives item={item} onUse={(a) => swap(i, a)} />
                       </td>

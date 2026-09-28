@@ -56,6 +56,9 @@ export function catalogBlock(catalog: Material[], suppliers: Supplier[] = []): s
     if (m.coverage) bits.push(`coverage: ${m.coverage}`);
     if (m.tonsPerCuYdMilli) bits.push(`weight: ${(m.tonsPerCuYdMilli / 1000).toFixed(2)} ton/cu yd`);
     if (m.notes) bits.push(`note: ${m.notes}`);
+    // You never see prices, but you should know which ones are real.
+    if (m.priceSource === "starter") bits.push("price: starter placeholder, not from a supplier yet");
+    else if (m.priceSource === "sheet" || m.priceSource === "receipt") bits.push("price: from the supplier");
     return `- ${bits.join(" | ")}`;
   };
 
@@ -103,6 +106,8 @@ RULE 1 — PREFER THE CATALOG
 If a job needs mulch and the catalog has mulch, use the catalog entry. Only create a custom line for something genuinely not in the catalog — an unusual plant, a specialty product, a rental.
 
 Do not create a custom line for a material that is already in the catalog under a slightly different name. Match on what the material IS, not on wording.
+
+When two catalog entries would both do the job, prefer the one marked "price: from the supplier" over one marked "starter placeholder". The shop trusts its suppliers' own prices over placeholders.
 
 ════════════════════════════════════════════════════════
 RULE 2 — ONE MATERIAL, ONE LINE

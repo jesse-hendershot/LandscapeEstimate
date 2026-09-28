@@ -99,3 +99,63 @@ test("bottom-line rows are never treated as edits", () => {
   const edited = [li({ material: "A", materialId: "a" }), li({ material: "GRAND TOTAL", kind: "total", unit: "total", low: 150, high: 150 })];
   assert.deepEqual(diffLines(orig, edited), []);
 });
+
+// ── price sheets ───────────────────────────────────────────────────────────
+
+import { groupLabelFor } from "./scan";
+
+test("a price sheet keeps groups, notes, phone and delivery terms; junk groups are dropped", () => {
+  const s = normalizeScan({
+    supplier: { name: "Conklin Quarry – Iowa City", phone: "319-555-0100" },
+    date: "2026-09-29",
+    lines: [
+      { description: "1 in clean limestone", unit: "ton", unitPrice: 26.5, group: "drain_rock", notes: "washed" },
+      { description: "Class A road stone", unit: "ton", unitPrice: "$21.00", group: "BASE_ROCK" },
+      { description: "Boulders", unit: "ton", unitPrice: 60, group: "big rocks" },
+    ],
+    delivery: { text: "$95 per load within 15 miles", flatFee: "95", minimum: "5 ton" },
+  });
+  assert.equal(s.supplier.phone, "319-555-0100");
+  assert.equal(s.lines[0].group, "drain_rock");
+  assert.equal(s.lines[0].notes, "washed");
+  assert.equal(s.lines[1].group, "base_rock");
+  assert.equal(s.lines[1].unitPrice, 21);
+  assert.equal(s.lines[2].group, "");
+  assert.equal(s.delivery?.flatFee, 95);
+  assert.equal(s.delivery?.minimum, "5 ton");
+});
+
+test("group labels reuse the shop's own wording when it has one", () => {
+  const line = { description: "#57", qty: null, unit: "ton", unitPrice: 25, lineTotal: null, group: "drain_rock" as const };
+  assert.equal(groupLabelFor(line, [{ specClass: "drain rock (clean, 3/4-1.5 in)" }]), "drain rock (clean, 3/4-1.5 in)");
+  assert.equal(groupLabelFor(line, [{ specClass: "" }]), "Drain rock (clean, 3/4-1.5 in)");
+  assert.equal(groupLabelFor({ ...line, group: "mulch" }, []), "");
+  assert.equal(groupLabelFor({ ...line, group: "" }, []), "");
+});
+
+test("one supplier's sheet never proposes repricing another supplier's row", () => {
+  const catalog = [
+    { ...mat("a1", "Clean stone, 1 in", "ton", 3300, "sA"), priceSource: "sheet" },
+    { ...mat("b1", "Clean stone, 1 in", "ton", 2900, "sB"), priceSource: "sheet" },
+    { ...mat("u1", "Pea gravel", "ton", 3000, null), priceSource: "starter" },
+  ] as Material[];
+  const scan = normalizeScan({
+    lines: [
+      { description: "1 in clean stone", unit: "ton", unitPrice: 31 },
+      { description: "pea gravel", unit: "ton", unitPrice: 55 },
+    ],
+  });
+
+  const forB = propose(scan, catalog, "sB");
+  assert.equal(forB[0].match?.materialId, "b1");
+  assert.equal(forB[0].match?.willLink, false);
+  assert.equal(forB[1].match?.materialId, "u1");
+  assert.equal(forB[1].match?.willLink, true);
+  assert.equal(forB[1].match?.priceSource, "starter");
+  assert.equal(forB[1].flag, ""); // +83% from a starter guess is expected, not suspicious
+
+  // A new supplier (none picked): only unowned rows are candidates.
+  const forNew = propose(scan, catalog, null);
+  assert.equal(forNew[0].action, "new");
+  assert.equal(forNew[1].match?.materialId, "u1");
+});

@@ -279,6 +279,13 @@ export async function runEstimate(profile: Profile, input: EstimateInput) {
   if (staleNames.length) {
     warnings.push(`Prices not checked in over ${STALE_DAYS} days: ${staleNames.join(", ")}.`);
   }
+  // Placeholder prices the shop never replaced with a supplier's own.
+  const starterNames = [...new Set(built.lines.filter((l) => l.fromCatalog && l.priceSource === "starter").map((l) => l.material))];
+  if (starterNames.length) {
+    warnings.push(
+      `${starterNames.length} line${starterNames.length === 1 ? " uses a starter price" : "s use starter prices"} (not from a supplier yet): ${starterNames.join(", ")}. Import your quarry's price sheet in the Catalog to replace ${starterNames.length === 1 ? "it" : "them"}.`
+    );
+  }
 
   const lineItems = toLineItems(built, profile.taxRateBps, buildOpts);
   const summary = siteSummary(site);
@@ -338,6 +345,8 @@ export async function runEstimate(profile: Profile, input: EstimateInput) {
           haulCents: l.haulCents ?? 0,
           miles: l.miles ?? null,
           alternatives: l.alternatives ?? null,
+          priceSource: l.priceSource ?? "",
+          priceLabel: l.priceLabel ?? "",
         }))
       );
     }
