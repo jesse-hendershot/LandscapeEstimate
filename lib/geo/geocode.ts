@@ -183,6 +183,35 @@ export async function geocodePlace(q: string, bias?: string): Promise<GeocodeRes
   return lookup(cleaned, "place");
 }
 
+/**
+ * "Menards – Iowa City, 2501 Muscatine Ave" -> { store: "Menards", town: "Iowa City" }.
+ * The town is whatever follows the dash, unless it's a street address.
+ */
+export function splitStore(q: string): { store: string; town: string } {
+  const [head, ...rest] = q.split(/\s[-–—]\s/);
+  const store = (head ?? "").split(/,|\(/)[0].trim();
+  const after = rest.join(" ").split(",")[0].trim();
+  return { store, town: /\d/.test(after) ? "" : after };
+}
+
+/**
+ * Geocode a store the way the model wrote it. The model's street addresses
+ * are often made up ("Menards – Iowa City, 2501 Muscatine Ave"; the real one
+ * is on Naples Ave), so when the full text misses, look up just the store in
+ * its town.
+ */
+export async function geocodeStore(q: string, bias?: string): Promise<GeocodeResult | null> {
+  const full = await geocodePlace(q, bias);
+  if (full) return full;
+  const { store, town } = splitStore(q);
+  const where = town || bias;
+  if (!store || !where) return null;
+  const short = `${store}, ${where}`;
+  if (normalizeQuery(short) === normalizeQuery(q)) return null;
+  await new Promise((r) => setTimeout(r, 1100)); // Nominatim: one request a second
+  return lookup(short, "place");
+}
+
 /** "Iowa City, IA" out of "123 Main St, Iowa City, IA 52240". */
 export function localityOf(address: string): string {
   const parts = address.split(",").map((s) => s.trim()).filter(Boolean);
