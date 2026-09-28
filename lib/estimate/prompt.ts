@@ -18,7 +18,30 @@
  * find a price for the occasional thing the shop does not stock.
  */
 
-import type { Material, Supplier } from "../db/schema";
+import type { EquipmentRow, Material, Supplier } from "../db/schema";
+
+const KIND_WORDS: Record<string, string> = {
+  skid_steer: "skid steer",
+  track_loader: "compact track loader",
+  mini_excavator: "mini excavator",
+  excavator: "excavator",
+  tractor: "tractor",
+  other: "machine",
+};
+
+/** The shop's machines, for the model to estimate engine hours against. */
+export function equipmentBlock(equipment: EquipmentRow[]): string {
+  return equipment
+    .filter((e) => e.isActive)
+    .map((e) => `- id: ${e.id} | ${e.name} (${KIND_WORDS[e.kind] ?? e.kind})${e.notes ? ` | note: ${e.notes}` : ""}`)
+    .join("\n");
+}
+
+/** Stores and yards on file, so researched lines name them the same way. */
+export function supplierNames(suppliers: Supplier[]): string {
+  const names = [...new Set(suppliers.filter((s) => s.isActive).map((s) => s.name))];
+  return names.length ? names.map((n) => `- ${n}`).join("\n") : "";
+}
 
 export function catalogBlock(catalog: Material[], suppliers: Supplier[] = []): string {
   if (catalog.length === 0) {
@@ -58,7 +81,9 @@ export function catalogBlock(catalog: Material[], suppliers: Supplier[] = []): s
   return out.join("\n").trim();
 }
 
-export function systemPrompt(catalog: Material[], suppliers: Supplier[] = []): string {
+export function systemPrompt(catalog: Material[], suppliers: Supplier[] = [], equipment: EquipmentRow[] = []): string {
+  const machines = equipmentBlock(equipment);
+  const stores = supplierNames(suppliers);
   return `You are an expert landscaping materials estimator working for a contractor in Iowa.
 
 Your job is to read a job description (and whatever site information is provided) and produce a materials list: what to buy and how much. You do NOT price catalog materials, choose suppliers, or compute any totals, tax, hauling or deposits — those are handled after you.
@@ -123,8 +148,11 @@ For anything not in the catalog, search for a current price and cite a real sell
 
 NEVER cite: sodcalculator.com, HomeAdvisor, Angi, Thumbtack, Homeyou, Fixr, Homewyse, or any cost-estimating or calculator site. Those are not sellers.
 
-ONLY cite: a named local supply yard, quarry, or nursery near the job address, a named sod farm, or a specific big-box location ("Menards – Iowa City, Hwy 1 W" — never a bare "Menards"). The source is used to work out driving distance, so name the actual store location.
-
+ONLY cite: a named local supply yard, quarry, or nursery near the job address, a named sod farm, or a specific big-box store with its town ("Menards – Iowa City" — never a bare "Menards"). The source is used to work out driving distance. Name the store and town; do not add a street address unless you read it on the seller's own page — a guessed address sends the truck to the wrong place.
+${stores ? `
+The shop already buys from these places. When one of them carries the item, cite it with exactly this name:
+${stores}
+` : ""}
 ════════════════════════════════════════════════════════
 RULE 6 — INCLUDE THE CONSUMABLES
 ════════════════════════════════════════════════════════
@@ -137,7 +165,22 @@ Include everything a contractor actually loads on the truck, whether or not the 
 - Seeding → starter fertilizer, erosion blanket on slopes
 - French drain → clean drain rock, perforated pipe with sock, non-woven filter fabric, outlet/emitter, fittings
 
+${machines ? `════════════════════════════════════════════════════════
+RULE 7 — MACHINE HOURS
 ════════════════════════════════════════════════════════
+The shop owns these machines. The server costs their fuel from engine hours, so for each machine this job needs, estimate the hours it runs ON SITE and show the arithmetic in \`basis\`:
+
+${machines}
+
+Rough production rates for a crew with good access (adjust down for tight yards, clay, rock, roots, wet ground, or hand-carry distances):
+- Mini excavator trenching 12–18 in wide, 18–24 in deep in loam: 30–60 ft/hr; backfilling is about half the digging time.
+- Skid steer / track loader moving loose material 50–150 ft: 15–30 cu yd/hr; spreading and fine grading: 1,000–2,500 sq ft/hr.
+- Skid steer removing sod or cutting grade 2–4 in: 800–1,500 sq ft/hr.
+- Add 0.5 hr per machine for unloading, setup and cleanup.
+
+Only list machines the job actually needs. Do not count driving to the job or hauling material — the server does that. Round to the nearest quarter hour.
+
+` : ""}════════════════════════════════════════════════════════
 OUTPUT FORMAT — CRITICAL
 ════════════════════════════════════════════════════════
 Return ONLY a valid JSON object. No prose, no markdown fences. Start with { and end with }.
@@ -149,7 +192,10 @@ Return ONLY a valid JSON object. No prose, no markdown fences. Start with { and 
   "custom_lines": [
     { "name": "specific product name and size", "unit": "one of: sq ft, cu yd, ton, bag, each, linear ft, roll, pack, bottle", "qty": 2, "low": 0.00, "high": 0.00, "source": "Named Seller – specific location", "basis": "why this quantity" }
   ],
-  "delivery": { "low": 0.00, "high": 0.00, "source": "only used if the shop has no trucks set up" },
+  "delivery": { "low": 0.00, "high": 0.00, "source": "only used if the shop has no trucks set up" },${machines ? `
+  "machines": [
+    { "equipmentId": "<exact id from RULE 7>", "hours": 2.5, "basis": "60 ft trench ÷ 40 ft/hr = 1.5 hr + 0.5 hr backfill + 0.5 hr setup" }
+  ],` : ""}
   "clarifications_needed": ["short question with an obvious answer type"],
   "notes": "one to three sentences: what you assumed and why"
 }

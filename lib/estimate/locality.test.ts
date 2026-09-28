@@ -8,7 +8,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 
-import type { Material, Supplier, TruckRow } from "../db/schema";
+import type { EquipmentRow, Material, Supplier, TrailerRow, TruckRow } from "../db/schema";
 import { applyBps } from "../money";
 import { buildEstimate, stripIds, toLineItems, type BuildOptions } from "./build";
 import { applyLocality, matchSupplier, storeBrand } from "./locality";
@@ -71,6 +71,8 @@ function truck(over: Partial<TruckRow> & { id: string; name: string }): TruckRow
   return {
     ownerId: "u",
     kind: "dump",
+    fuel: "diesel",
+    trailerId: null,
     capacityTonsMilli: 13000,
     capacityCuYdMilli: 10000,
     mpgTenths: 60,
@@ -124,6 +126,11 @@ const PROFILE = {
 const OPTS: BuildOptions = { taxRateBps: 700, taxHaul: true, taxDeposits: false };
 
 const DIESEL = { centsPerGal: 400, period: "2026-09-21", source: "manual" as const, label: "$4.00/gal (test)" };
+const FUEL = {
+  diesel: DIESEL,
+  gas: { centsPerGal: 350, period: "2026-09-21", source: "manual" as const, label: "$3.50/gal (test)" },
+  offroad: { centsPerGal: 343, period: "2026-09-21", source: "derived" as const, label: "$3.43/gal (test)" },
+};
 
 async function run(modelOut: Parameters<typeof buildEstimate>[0], over: Partial<Parameters<typeof applyLocality>[0]> = {}) {
   const built = buildEstimate(modelOut, CATALOG, OPTS);
@@ -135,7 +142,7 @@ async function run(modelOut: Parameters<typeof buildEstimate>[0], over: Partial<
     profile: PROFILE,
     job: JOB,
     trucksForJob: 1,
-    diesel: DIESEL,
+    fuel: FUEL,
     bias: "Iowa City, IA",
     buildOpts: OPTS,
     ...over,
@@ -203,7 +210,7 @@ test("taxing deposits is a setting, off by default", async () => {
   const built0 = buildEstimate({ catalog_lines: [{ catalogId: "sod", qty: 450 }] }, CATALOG, opts);
   const { built } = await applyLocality({
     built: built0, catalog: CATALOG, suppliers: SUPPLIERS, trucks: TRUCKS, profile: PROFILE,
-    job: JOB, trucksForJob: 1, diesel: DIESEL, bias: "", buildOpts: opts,
+    job: JOB, trucksForJob: 1, fuel: FUEL, bias: "", buildOpts: opts,
   });
   assert.equal(built.taxLowCents, applyBps(built.subtotalLowCents + built.deliveryLowCents + built.depositCents, 700));
 });
@@ -229,7 +236,7 @@ test("a supplier with no location uses the default distance and says so", async 
   const built0 = buildEstimate({ catalog_lines: [{ catalogId: "mystery", qty: 3 }] }, cat, OPTS);
   const { detail } = await applyLocality({
     built: built0, catalog: cat, suppliers: SUPPLIERS, trucks: TRUCKS, profile: PROFILE,
-    job: JOB, trucksForJob: 1, diesel: DIESEL, bias: "", buildOpts: OPTS,
+    job: JOB, trucksForJob: 1, fuel: FUEL, bias: "", buildOpts: OPTS,
   });
   assert.ok(detail.warnings.some((w) => /assumed 15 mi/.test(w)), detail.warnings.join(" | "));
 });
@@ -271,4 +278,96 @@ test("catalog ids are scrubbed out of the model's notes", () => {
     stripIds("Uses Clean stone 1 in (id 29c48214) and River rock (id 40e424de-1111-2222-3333-444455556666)."),
     "Uses Clean stone 1 in and River rock."
   );
+});
+
+// ── machines ───────────────────────────────────────────────────────────────
+
+function machine(over: Partial<EquipmentRow> & { id: string; name: string }): EquipmentRow {
+  return {
+    ownerId: "u",
+    kind: "skid_steer",
+    fuel: "offroad",
+    galPerHourTenths: 30,
+    trailerId: null,
+    haulTrips: 1,
+    notes: "",
+    isActive: true,
+    createdAt: now,
+    updatedAt: now,
+    ...over,
+  };
+}
+
+const EQ_TRAILER: TrailerRow = {
+  id: "trE",
+  ownerId: "u",
+  name: "Equipment trailer",
+  kind: "equipment",
+  capacityTonsMilli: 7000,
+  capacityCuYdMilli: 0,
+  isActive: true,
+  createdAt: now,
+  updatedAt: now,
+};
+
+test("machine fuel is its own taxed row, and hauling the machine out is hauling", async () => {
+  const equipment = [machine({ id: "ss", name: "Skid steer", trailerId: "trE", haulTrips: 1 })];
+  const built0 = buildEstimate({ catalog_lines: [{ catalogId: "near", qty: 5 }] }, CATALOG, OPTS);
+  const without = await applyLocality({
+    built: built0, catalog: CATALOG, suppliers: SUPPLIERS, trucks: TRUCKS, profile: PROFILE,
+    job: JOB, trucksForJob: 1, fuel: FUEL, bias: "", buildOpts: OPTS,
+  });
+  const { built, detail } = await applyLocality({
+    built: built0, catalog: CATALOG, suppliers: SUPPLIERS, trucks: TRUCKS, profile: PROFILE,
+    trailers: [EQ_TRAILER], equipment, machines: [{ equipmentId: "ss", hours: 4 }],
+    job: JOB, trucksForJob: 1, fuel: FUEL, bias: "", buildOpts: OPTS,
+  });
+  // 4 hr x 3 gal/hr x $3.43 off-road
+  assert.equal(built.machineCents, 4116);
+  assert.equal(detail.machines?.[0].gallons, 12);
+  // One trip out and back with the lead truck, on top of the rock haul
+  assert.equal(detail.plan?.mobilization?.length, 1);
+  assert.equal(detail.plan?.mobilization?.[0].trips, 1);
+  assert.ok(built.deliveryLowCents > without.built.deliveryLowCents);
+  assert.match(built.haulLabel, /1 machine trip/);
+  // Taxed with hauling
+  assert.equal(built.taxLowCents, applyBps(built.subtotalLowCents + built.deliveryLowCents + built.machineCents, 700));
+  assert.equal(built.totalLowCents, built.subtotalLowCents + built.deliveryLowCents + built.machineCents + built.depositCents + built.taxLowCents);
+
+  const items = toLineItems(built, 700, OPTS);
+  const row = items.find((i) => i.kind === "machine")!;
+  assert.equal(row.low, 41.16);
+  assert.match(row.source, /Skid steer 4 hr · off-road diesel \$3\.43/);
+  assert.match(items.find((i) => i.kind === "tax")!.source, /hauling \+ machine fuel/);
+});
+
+test("machine fuel isn't taxed when hauling isn't", async () => {
+  const opts = { ...OPTS, taxHaul: false };
+  const built0 = buildEstimate({ catalog_lines: [{ catalogId: "near", qty: 5 }] }, CATALOG, opts);
+  const { built } = await applyLocality({
+    built: built0, catalog: CATALOG, suppliers: SUPPLIERS, trucks: TRUCKS, profile: PROFILE,
+    equipment: [machine({ id: "ss", name: "Skid steer" })], machines: [{ equipmentId: "ss", hours: 2 }],
+    job: JOB, trucksForJob: 1, fuel: FUEL, bias: "", buildOpts: opts,
+  });
+  assert.ok(built.machineCents > 0);
+  assert.equal(built.taxLowCents, applyBps(built.subtotalLowCents, 700));
+});
+
+test("the truck that pulls the equipment trailer is the one that hauls the machine", async () => {
+  const trucks = [...TRUCKS, truck({ id: "t9", name: "F-350", kind: "pickup", trailerId: "trE", mpgTenths: 120 })];
+  const { detail } = await applyLocality({
+    built: buildEstimate({}, CATALOG, OPTS), catalog: CATALOG, suppliers: SUPPLIERS, trucks, profile: PROFILE,
+    trailers: [EQ_TRAILER], equipment: [machine({ id: "ss", name: "Skid steer", trailerId: "trE" })],
+    machines: [{ equipmentId: "ss", hours: 3 }],
+    job: JOB, trucksForJob: 1, fuel: FUEL, bias: "", buildOpts: OPTS,
+  });
+  assert.equal(detail.plan?.mobilization?.[0].truckName, "F-350");
+});
+
+test("no job location: machine fuel still counts", async () => {
+  const { built } = await run(
+    { catalog_lines: [{ catalogId: "sod", qty: 450 }] },
+    { job: null, equipment: [machine({ id: "ss", name: "Skid steer" })], machines: [{ equipmentId: "ss", hours: 1 }] }
+  );
+  assert.equal(built.machineCents, 1029);
 });

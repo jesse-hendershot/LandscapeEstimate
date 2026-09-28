@@ -2,7 +2,7 @@
 
 /**
  * Where the hauling number comes from, in plain terms: loads per material,
- * store runs, shop round trips, this week's diesel. And the one knob that
+ * store runs, machines hauled out, shop round trips, this week's diesel. And the one knob that
  * changes it most on the day: how many trucks go to the job.
  */
 
@@ -72,6 +72,14 @@ export default function HaulPanel({
                 Store run — {s.supplier} ({s.lines} item{s.lines === 1 ? "" : "s"}, {mi(s.miles)} mi round trip)
               </span>
               <b>{money(s.cents)}</b>
+            </div>
+          ))}
+          {(plan.mobilization ?? []).map((m, i) => (
+            <div key={`m${i}`} style={{ display: "flex", gap: 8, justifyContent: "space-between" }}>
+              <span>
+                Haul the {m.name} out and back — {m.truckName}, {m.trips} round trip{m.trips === 1 ? "" : "s"}, {mi(m.miles)} mi
+              </span>
+              <b>{money(m.cents)}</b>
             </div>
           ))}
           {plan.commute.trucks > 0 && (

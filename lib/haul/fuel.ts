@@ -1,5 +1,6 @@
 /**
- * Diesel price for the haul math.
+ * Fuel prices for the haul and machine math: road diesel, gasoline (a gas
+ * pickup's miles), and off-road diesel (the machines).
  *
  * Source of truth is the EIA's weekly Midwest (PADD 2) No. 2 diesel retail
  * price, series EMD_EPD2D_PTE_R20_DPG. It's published every Monday for the
@@ -14,7 +15,9 @@
  *     returns null rather than guessing if the table ever changes shape.
  *
  * A shop that buys fuel on contract can pin its own price in Settings, which
- * overrides both.
+ * overrides both. Gasoline works the same way from its own EIA series. Dyed
+ * off-road diesel has no public weekly price, so it's road diesel less the
+ * road taxes it doesn't pay, unless the shop enters what it actually pays.
  */
 
 import { and, desc, eq } from "drizzle-orm";
@@ -24,16 +27,37 @@ import { fuelPrices, type Profile } from "../db/schema";
 import { fetchJson, fetchWithTimeout } from "../net";
 
 export const DIESEL_SERIES = "EMD_EPD2D_PTE_R20_DPG";
-const HISTORY_URL = `https://www.eia.gov/dnav/pet/hist/LeafHandler.ashx?n=PET&s=${DIESEL_SERIES}&f=W`;
+/** Weekly Midwest regular gasoline, all formulations. Same page layout as diesel. */
+export const GAS_SERIES = "EMM_EPMR_PTE_R20_DPG";
+const historyUrl = (series: string) => `https://www.eia.gov/dnav/pet/hist/LeafHandler.ashx?n=PET&s=${series}&f=W`;
 
 /** Used only if EIA has never been reachable. Midwest retail, week of 2026-09-21. */
 export const FALLBACK_DIESEL_CENTS = 668;
+export const FALLBACK_GAS_CENTS = 439;
+
+/**
+ * Road taxes that dyed off-road diesel doesn't carry, cents per gallon:
+ * federal 24.4 plus Iowa 32.5 (unchanged July 1, 2026). Off-road diesel is
+ * estimated as road diesel minus these unless the shop enters what it pays.
+ */
+export const ROAD_TAX_CENTS = 57;
 
 export interface DieselPrice {
   centsPerGal: number;
   period: string | null;
-  source: "manual" | "eia" | "eia-cached" | "fallback";
+  source: "manual" | "eia" | "eia-cached" | "fallback" | "derived";
   label: string;
+}
+
+/** Any fuel's weekly price; same shape as diesel's. */
+export type FuelPrice = DieselPrice;
+
+export type FuelKind = "diesel" | "gas" | "offroad";
+
+export interface FuelPrices {
+  diesel: FuelPrice;
+  gas: FuelPrice;
+  offroad: FuelPrice;
 }
 
 const MONTHS: Record<string, string> = {
@@ -80,12 +104,12 @@ export function parseEiaApi(json: unknown): { period: string; dollars: number } 
   return latest;
 }
 
-async function fetchLatest(): Promise<{ period: string; dollars: number } | null> {
+async function fetchLatest(series: string): Promise<{ period: string; dollars: number } | null> {
   const key = process.env.EIA_API_KEY;
   if (key) {
     try {
       const url =
-        `https://api.eia.gov/v2/seriesid/PET.${DIESEL_SERIES}.W?` +
+        `https://api.eia.gov/v2/seriesid/PET.${series}.W?` +
         new URLSearchParams({ api_key: key, length: "5", "sort[0][column]": "period", "sort[0][direction]": "desc" });
       const r = parseEiaApi(await fetchJson(url, { timeoutMs: 8000 }));
       if (r) return r;
@@ -93,29 +117,33 @@ async function fetchLatest(): Promise<{ period: string; dollars: number } | null
       // fall through to the page
     }
   }
-  const res = await fetchWithTimeout(HISTORY_URL, { timeoutMs: 8000 });
+  const res = await fetchWithTimeout(historyUrl(series), { timeoutMs: 8000 });
   if (!res.ok) return null;
   return parseEiaHistoryHtml(await res.text());
 }
 
 const REFRESH_AFTER_MS = 12 * 3600 * 1000;
 
-export async function currentDiesel(profile: Pick<Profile, "dieselOverrideCents">): Promise<DieselPrice> {
-  if (profile.dieselOverrideCents > 0) {
+const NOUN: Record<string, string> = { [DIESEL_SERIES]: "Midwest diesel", [GAS_SERIES]: "Midwest regular gas" };
+
+/** This week's EIA price for one series, from the cache when it's fresh. */
+async function weeklyPrice(series: string, overrideCents: number, fallbackCents: number): Promise<FuelPrice> {
+  if (overrideCents > 0) {
     return {
-      centsPerGal: profile.dieselOverrideCents,
+      centsPerGal: overrideCents,
       period: null,
       source: "manual",
-      label: `$${(profile.dieselOverrideCents / 100).toFixed(2)}/gal (your setting)`,
+      label: `$${(overrideCents / 100).toFixed(2)}/gal (your setting)`,
     };
   }
+  const noun = NOUN[series] ?? "fuel";
 
   let row: { centsPerGal: number; period: string; fetchedAt: Date } | undefined;
   try {
     [row] = await db
       .select({ centsPerGal: fuelPrices.centsPerGal, period: fuelPrices.period, fetchedAt: fuelPrices.fetchedAt })
       .from(fuelPrices)
-      .where(eq(fuelPrices.series, DIESEL_SERIES))
+      .where(eq(fuelPrices.series, series))
       .orderBy(desc(fuelPrices.period))
       .limit(1);
   } catch {
@@ -129,12 +157,12 @@ export async function currentDiesel(profile: Pick<Profile, "dieselOverrideCents"
   // than twice a day either way.
   if (!row || (periodAgeDays > 7 && !checkedRecently)) {
     try {
-      const latest = await fetchLatest();
+      const latest = await fetchLatest(series);
       if (latest) {
         const cents = Math.round(latest.dollars * 100);
         await db
           .insert(fuelPrices)
-          .values({ series: DIESEL_SERIES, period: latest.period, centsPerGal: cents, source: "eia" })
+          .values({ series, period: latest.period, centsPerGal: cents, source: "eia" })
           .onConflictDoUpdate({
             target: [fuelPrices.series, fuelPrices.period],
             set: { centsPerGal: cents, fetchedAt: new Date() },
@@ -143,7 +171,7 @@ export async function currentDiesel(profile: Pick<Profile, "dieselOverrideCents"
           centsPerGal: cents,
           period: latest.period,
           source: "eia",
-          label: `$${latest.dollars.toFixed(2)}/gal — EIA Midwest diesel, week of ${latest.period}`,
+          label: `$${latest.dollars.toFixed(2)}/gal — EIA ${noun}, week of ${latest.period}`,
         };
       }
     } catch {
@@ -155,7 +183,7 @@ export async function currentDiesel(profile: Pick<Profile, "dieselOverrideCents"
         await db
           .update(fuelPrices)
           .set({ fetchedAt: new Date() })
-          .where(and(eq(fuelPrices.series, DIESEL_SERIES), eq(fuelPrices.period, row.period)));
+          .where(and(eq(fuelPrices.series, series), eq(fuelPrices.period, row.period)));
       } catch {
         // ignore
       }
@@ -167,14 +195,46 @@ export async function currentDiesel(profile: Pick<Profile, "dieselOverrideCents"
       centsPerGal: row.centsPerGal,
       period: row.period,
       source: "eia-cached",
-      label: `$${(row.centsPerGal / 100).toFixed(2)}/gal — EIA Midwest diesel, week of ${row.period}`,
+      label: `$${(row.centsPerGal / 100).toFixed(2)}/gal — EIA ${noun}, week of ${row.period}`,
     };
   }
 
   return {
-    centsPerGal: FALLBACK_DIESEL_CENTS,
+    centsPerGal: fallbackCents,
     period: null,
     source: "fallback",
-    label: `$${(FALLBACK_DIESEL_CENTS / 100).toFixed(2)}/gal (couldn't reach EIA — set your own price in Settings)`,
+    label: `$${(fallbackCents / 100).toFixed(2)}/gal (couldn't reach EIA — set your own price in Settings)`,
   };
 }
+
+export async function currentDiesel(profile: Pick<Profile, "dieselOverrideCents">): Promise<DieselPrice> {
+  return weeklyPrice(DIESEL_SERIES, profile.dieselOverrideCents, FALLBACK_DIESEL_CENTS);
+}
+
+/** Off-road diesel: the shop's own price, or road diesel less the road taxes. */
+export function offroadFrom(diesel: FuelPrice, overrideCents: number): FuelPrice {
+  if (overrideCents > 0) {
+    return { centsPerGal: overrideCents, period: null, source: "manual", label: `$${(overrideCents / 100).toFixed(2)}/gal (your setting)` };
+  }
+  const cents = Math.max(0, diesel.centsPerGal - ROAD_TAX_CENTS);
+  return {
+    centsPerGal: cents,
+    period: diesel.period,
+    source: "derived",
+    label: `$${(cents / 100).toFixed(2)}/gal — road diesel less 24.4¢ federal + 32.5¢ Iowa road tax`,
+  };
+}
+
+/** Diesel, gas and off-road diesel for this week, honoring the shop's own prices. */
+export async function currentFuel(
+  profile: Pick<Profile, "dieselOverrideCents" | "gasOverrideCents" | "offroadOverrideCents">
+): Promise<FuelPrices> {
+  const [diesel, gas] = await Promise.all([
+    currentDiesel(profile),
+    weeklyPrice(GAS_SERIES, profile.gasOverrideCents ?? 0, FALLBACK_GAS_CENTS),
+  ]);
+  return { diesel, gas, offroad: offroadFrom(diesel, profile.offroadOverrideCents ?? 0) };
+}
+
+export const centsFor = (prices: FuelPrices, kind: string): number =>
+  (kind === "gas" ? prices.gas : kind === "offroad" ? prices.offroad : prices.diesel).centsPerGal;

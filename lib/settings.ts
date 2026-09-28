@@ -26,6 +26,8 @@ export function presentSettings(p: Profile) {
     shopLat: p.shopLat,
     shopLng: p.shopLng,
     dieselOverride: fromCents(p.dieselOverrideCents),
+    gasOverride: fromCents(p.gasOverrideCents),
+    offroadOverride: fromCents(p.offroadOverrideCents),
     avgMph: p.avgMph,
     loadMinutes: p.loadMinutes,
     pickupStopMinutes: p.pickupStopMinutes,
@@ -46,6 +48,8 @@ export const settingsPatchSchema = z
     taxDeposits: z.boolean(),
     shopAddress: z.string().trim().max(240),
     dieselOverride: z.number().min(0).max(20),
+    gasOverride: z.number().min(0).max(20),
+    offroadOverride: z.number().min(0).max(20),
     avgMph: z.number().int().min(10).max(70),
     loadMinutes: z.number().int().min(0).max(180),
     pickupStopMinutes: z.number().int().min(0).max(180),
@@ -70,13 +74,18 @@ export async function updateSettings(
   if (patch.taxHaul !== undefined) next.taxHaul = patch.taxHaul;
   if (patch.taxDeposits !== undefined) next.taxDeposits = patch.taxDeposits;
   if (patch.dieselOverride !== undefined) next.dieselOverrideCents = toCents(patch.dieselOverride);
+  if (patch.gasOverride !== undefined) next.gasOverrideCents = toCents(patch.gasOverride);
+  if (patch.offroadOverride !== undefined) next.offroadOverrideCents = toCents(patch.offroadOverride);
   if (patch.avgMph !== undefined) next.avgMph = patch.avgMph;
   if (patch.loadMinutes !== undefined) next.loadMinutes = patch.loadMinutes;
   if (patch.pickupStopMinutes !== undefined) next.pickupStopMinutes = patch.pickupStopMinutes;
   if (patch.trucksPerJob !== undefined) next.trucksPerJob = patch.trucksPerJob;
   if (patch.defaultHaulMiles !== undefined) next.defaultHaulMiles = patch.defaultHaulMiles;
 
-  if (patch.shopAddress !== undefined && patch.shopAddress !== profile.shopAddress) {
+  // Re-locate on a new address, and also on the same one if it was never found
+  // (the geocoder may simply have been down the first time).
+  const unlocated = profile.shopLat === null || profile.shopLng === null;
+  if (patch.shopAddress !== undefined && (patch.shopAddress !== profile.shopAddress || (unlocated && patch.shopAddress))) {
     next.shopAddress = patch.shopAddress;
     if (patch.shopAddress) {
       const g = await geocodeAddress(patch.shopAddress, "Iowa");

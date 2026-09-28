@@ -8,8 +8,8 @@
  * the estimator nothing, because they were fixing those lines anyway.
  *
  * Saving also re-plans the haul: change 20 tons to 30 and the load count, and
- * so the hauling cost, follows. Substitutes are NOT re-ranked on save; the
- * estimator's choices stand.
+ * so the hauling cost, follows. The same goes for machine hours. Substitutes
+ * are NOT re-ranked on save; the estimator's choices stand.
  */
 
 import { and, asc, desc, eq } from "drizzle-orm";
@@ -26,12 +26,15 @@ import {
   type Profile,
 } from "../db/schema";
 import { localityOf } from "../geo/geocode";
-import { currentDiesel } from "../haul/fuel";
+import { listEquipment } from "../fleet/equipment";
+import { listTrailers } from "../fleet/trailers";
+import { currentFuel } from "../haul/fuel";
+import { machineLabel, normalizeUses, type MachineLine, type MachineUse } from "../haul/machines";
 import { fromCents, fromMilli, toCents, toMilli } from "../money";
 import { listSuppliers } from "../suppliers/repo";
 import { listTrucks } from "../trucks/repo";
 import { computeTotals, toLineItems, type BuildOptions, type BuiltEstimate, type BuiltLine } from "../estimate/build";
-import { applyLocality, type HaulDetail } from "../estimate/locality";
+import { applyLocality, toMachine, type HaulDetail } from "../estimate/locality";
 import { isSpecial, type LineAlternative, type LineItem } from "../estimate/schema";
 
 // ── read ───────────────────────────────────────────────────────────────────
@@ -109,6 +112,8 @@ export function originalItems(row: EstimateRow, lines: EstimateLineRow[]): LineI
     deliveryHighCents: row.deliveryHighCents,
     haulSource: haulSourceOf(row),
     haulLabel: haulLabelOf(row),
+    machineCents: row.machineCents,
+    machineLabel: generatedMachineLabel(row),
     depositCents: row.depositCents,
     deposits: [],
     taxLowCents: row.taxLowCents,
@@ -140,6 +145,21 @@ function rowToBuilt(l: EstimateLineRow): BuiltLine {
     miles: l.miles,
     alternatives: (l.alternatives as LineAlternative[] | null) ?? undefined,
   };
+}
+
+/**
+ * The machine label as generated. haul_detail is rewritten on every save, so
+ * the generated label is rebuilt from the generated hours when they differ.
+ */
+function generatedMachineLabel(row: EstimateRow): string {
+  const d = row.haulDetail as HaulDetail | null;
+  const lines = d?.machines ?? [];
+  if (row.machineCents <= 0 || lines.length === 0) return "";
+  const gen = new Map(((row.machines as MachineUse[] | null) ?? []).map((u) => [u.equipmentId, u.hours]));
+  const asGenerated: MachineLine[] = lines
+    .filter((l) => gen.has(l.equipmentId))
+    .map((l) => ({ ...l, hours: gen.get(l.equipmentId)! }));
+  return machineLabel(asGenerated.length ? asGenerated : lines);
 }
 
 function haulSourceOf(row: EstimateRow): BuiltEstimate["haulSource"] {
@@ -274,7 +294,7 @@ const lineItemSchema = z.object({
   low: z.number().min(0).max(1_000_000),
   high: z.number().min(0).max(1_000_000),
   source: z.string().max(400).default(""),
-  kind: z.enum(["material", "haul", "deposit", "tax", "total"]).optional(),
+  kind: z.enum(["material", "haul", "machine", "deposit", "tax", "total"]).optional(),
   materialId: z.string().max(40).nullish(),
   fromCatalog: z.boolean().optional(),
   basis: z.string().max(1000).optional(),
@@ -287,6 +307,10 @@ export const estimatePatchSchema = z
   .object({
     lines: z.array(lineItemSchema).max(200),
     trucksForJob: z.number().int().min(1).max(10),
+    /** Machine hours as the estimator set them; replaces the whole list. */
+    machines: z
+      .array(z.object({ equipmentId: z.string().max(40), hours: z.number().min(0).max(1000), basis: z.string().max(400).optional() }))
+      .max(20),
     markupPct: z.number().min(0).max(300),
     handTotal: z.number().min(0).max(10_000_000).nullable(),
     handMinutes: z.number().int().min(0).max(10_000).nullable(),
@@ -338,12 +362,14 @@ export async function saveEstimate(profile: Profile, id: string, patch: Estimate
 
   let edits: LineEditDiff[] | null = null;
 
-  if (patch.lines !== undefined || patch.trucksForJob !== undefined) {
-    const [catalog, suppliers, trucks, diesel] = await Promise.all([
+  if (patch.lines !== undefined || patch.trucksForJob !== undefined || patch.machines !== undefined) {
+    const [catalog, suppliers, trucks, trailers, equipment, fuel] = await Promise.all([
       listMaterials(profile.id, { includeInactive: true }),
       listSuppliers(profile.id, { includeInactive: true }),
       listTrucks(profile.id),
-      currentDiesel(profile),
+      listTrailers(profile.id),
+      listEquipment(profile.id),
+      currentFuel(profile),
     ]);
     const catalogIds = new Set(catalog.map((m) => m.id));
     const prevItems = Array.isArray(row.editedLines) ? (row.editedLines as LineItem[]) : originalItems(row, lines);
@@ -365,6 +391,8 @@ export async function saveEstimate(profile: Profile, id: string, patch: Estimate
         deliveryHighCents: row.deliveryHighCents,
         haulSource: haulSourceOf(row),
         haulLabel: haulLabelOf(row),
+        machineCents: 0,
+        machineLabel: "",
         depositCents: row.depositCents,
         deposits: [],
         taxLowCents: 0,
@@ -383,27 +411,35 @@ export async function saveEstimate(profile: Profile, id: string, patch: Estimate
 
     const prevDetail = row.haulDetail as HaulDetail | null;
     const trucksForJob = patch.trucksForJob ?? prevDetail?.trucksForJob ?? profile.trucksPerJob;
+    // Machine hours: this save's, else the last save's, else as generated.
+    const machineRows = equipment.map(toMachine);
+    const machineUses = normalizeUses(
+      patch.machines ??
+        prevDetail?.machines?.map((l) => ({ equipmentId: l.equipmentId, hours: l.hours, basis: l.basis })) ??
+        row.machines,
+      machineRows
+    ).uses;
     const job = row.jobLat !== null && row.jobLng !== null ? { lat: row.jobLat, lng: row.jobLng } : null;
 
-    let built = base;
-    let detail = prevDetail;
-    if (job) {
-      const loc = await applyLocality({
-        built: base,
-        catalog,
-        suppliers,
-        trucks,
-        profile,
-        job,
-        trucksForJob,
-        diesel,
-        bias: localityOf(profile.shopAddress) || "Iowa City, IA",
-        buildOpts,
-        rank: false,
-      });
-      built = loc.built;
-      detail = loc.detail;
-    }
+    // Runs without a job location too: machine fuel and deposits don't need one.
+    const loc = await applyLocality({
+      built: base,
+      catalog,
+      suppliers,
+      trucks,
+      trailers,
+      equipment,
+      machines: machineUses,
+      profile,
+      job,
+      trucksForJob,
+      fuel,
+      bias: localityOf(profile.shopAddress) || "Iowa City, IA",
+      buildOpts,
+      rank: false,
+    });
+    const built = loc.built;
+    const detail = loc.detail;
 
     const newItems = toLineItems(built, row.taxRateBps, buildOpts);
     set.editedLines = newItems;

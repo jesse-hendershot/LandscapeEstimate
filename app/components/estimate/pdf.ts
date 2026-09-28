@@ -1,6 +1,6 @@
 /**
  * Customer-ready PDF. Lifted out of the page component; same layout as
- * before, plus hauling and pallet-deposit rows.
+ * before, plus hauling, machine fuel and pallet-deposit rows.
  */
 
 import type { LineItem } from "./types";
@@ -12,6 +12,7 @@ export async function downloadEstimatePdf(args: {
   items: LineItem[];
   totals: Totals;
   haulLabel: string;
+  machineLabel?: string;
   depositLabel: string;
   taxLabel: string;
   markupPct: number;
@@ -76,6 +77,7 @@ export async function downloadEstimatePdf(args: {
 
   const bottom: string[][] = [["Subtotal", "", "", `$${fmt(t.subLow)}`, `$${fmt(t.subHigh)}`, ""]];
   if (t.haul > 0) bottom.push(["Hauling & delivery", "", "", `$${fmt(t.haul)}`, `$${fmt(t.haul)}`, args.haulLabel]);
+  if (t.machine > 0) bottom.push(["Machine fuel", "", "", `$${fmt(t.machine)}`, `$${fmt(t.machine)}`, args.machineLabel ?? ""]);
   if (t.deposit > 0) bottom.push(["Pallet deposits (refundable)", "", "", `$${fmt(t.deposit)}`, `$${fmt(t.deposit)}`, args.depositLabel]);
   bottom.push([args.taxLabel, "", "", `$${fmt(t.taxLow)}`, `$${fmt(t.taxHigh)}`, ""]);
 

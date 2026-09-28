@@ -14,9 +14,12 @@
  *      adds its own shop round trip. Bulk loads are shared round-robin across
  *      the trucks on the job, biggest truck first.
  *
- * A trip costs fuel (miles / mpg x diesel) plus time (hours x the truck's
- * hourly cost, which covers the driver and wear but NOT fuel — fuel is counted
- * separately so a diesel spike shows up in every estimate the week it happens).
+ * A trip costs fuel (miles / mpg x that truck's fuel price — diesel, or gas for
+ * a gas pickup) plus time (hours x the truck's hourly cost, which covers the
+ * driver and wear but NOT fuel — fuel is counted separately so a diesel spike
+ * shows up in every estimate the week it happens).
+ *
+ * Machines that ride out on a trailer add their own shop round trips.
  *
  * Money comes out in integer cents. Distances and hours are floats; they are
  * inputs to a cost, not numbers a contractor bills, and each cost is rounded to
@@ -34,6 +37,28 @@ export interface Truck {
   mpg: number;
   /** Driver + truck per hour, excluding fuel. */
   costPerHourCents: number;
+  /** This truck's fuel price (gas or diesel). Falls back to the settings' diesel. */
+  fuelCentsPerGal?: number;
+}
+
+/** A machine hauled out to the job and back on a trailer. */
+export interface Mobilization {
+  key: string;
+  name: string;
+  /** Round trips shop <-> job. */
+  trips: number;
+  /** The truck that pulls its trailer, when one is set up for it. */
+  truckId?: string | null;
+}
+
+export interface MobilizationResult {
+  key: string;
+  name: string;
+  truckName: string;
+  trips: number;
+  miles: number;
+  hours: number;
+  cents: number;
 }
 
 export interface HaulSettings {
@@ -103,6 +128,8 @@ export interface PickupStop {
 export interface HaulPlan {
   lines: HaulLineResult[];
   pickupStops: PickupStop[];
+  /** Machines hauled out and back. Their trips start and end at the shop. */
+  mobilization: MobilizationResult[];
   commute: { trucks: number; milesEach: number; miles: number; hours: number; cents: number };
   trucksUsed: { id: string; name: string; loads: number }[];
   totalCents: number;
@@ -112,9 +139,14 @@ export interface HaulPlan {
   warnings: string[];
 }
 
-export function fuelCents(miles: number, mpg: number, dieselCentsPerGal: number): number {
+export function fuelCents(miles: number, mpg: number, centsPerGal: number): number {
   if (miles <= 0 || mpg <= 0) return 0;
-  return Math.round((miles / mpg) * dieselCentsPerGal);
+  return Math.round((miles / mpg) * centsPerGal);
+}
+
+/** The price a truck's miles are costed at: its own fuel, else diesel. */
+export function priceOf(t: Truck, s: Pick<HaulSettings, "dieselCentsPerGal">): number {
+  return t.fuelCentsPerGal !== undefined && t.fuelCentsPerGal > 0 ? t.fuelCentsPerGal : s.dieselCentsPerGal;
 }
 
 export function timeCents(hours: number, costPerHourCents: number): number {
@@ -168,7 +200,7 @@ export function splitLoads(tons: number, cuYd: number, trucks: Truck[]): LoadDet
  * `trucksForJob` biggest dump trucks; pickup stops use the first pickup (or the
  * smallest dump truck if the shop has no pickup listed).
  */
-export function planHaul(lines: HaulLine[], fleet: Truck[], s: HaulSettings): HaulPlan {
+export function planHaul(lines: HaulLine[], fleet: Truck[], s: HaulSettings, mobs: Mobilization[] = []): HaulPlan {
   const warnings: string[] = [];
   const mph = s.avgMph > 0 ? s.avgMph : 35;
 
@@ -243,7 +275,7 @@ export function planHaul(lines: HaulLine[], fleet: Truck[], s: HaulSettings): Ha
       const hours = roundTrip / mph + s.loadMinutes / 60;
       base.miles += roundTrip;
       base.hours += hours;
-      base.fuelCents += fuelCents(roundTrip, truck.mpg, s.dieselCentsPerGal);
+      base.fuelCents += fuelCents(roundTrip, truck.mpg, priceOf(truck, s));
       base.timeCents += timeCents(hours, truck.costPerHourCents);
       loadsPerTruck.set(truck.id, (loadsPerTruck.get(truck.id) ?? 0) + 1);
     }
@@ -263,7 +295,7 @@ export function planHaul(lines: HaulLine[], fleet: Truck[], s: HaulSettings): Ha
       const miles = 2 * oneWay;
       const hours = miles / mph + s.pickupStopMinutes / 60;
       const cents =
-        fuelCents(miles, pickupTruck.mpg, s.dieselCentsPerGal) +
+        fuelCents(miles, pickupTruck.mpg, priceOf(pickupTruck, s)) +
         timeCents(hours, pickupTruck.costPerHourCents);
       pickupStops.push({
         supplierKey,
@@ -310,20 +342,43 @@ export function planHaul(lines: HaulLine[], fleet: Truck[], s: HaulSettings): Ha
       for (const t of used) {
         const h = milesEach / mph;
         hours += h;
-        cents += fuelCents(milesEach, t.mpg, s.dieselCentsPerGal) + timeCents(h, t.costPerHourCents);
+        cents += fuelCents(milesEach, t.mpg, priceOf(t, s)) + timeCents(h, t.costPerHourCents);
       }
       commute = { trucks: used.length, milesEach, miles: milesEach * used.length, hours, cents };
     }
   }
 
+  // ── machines out and back: each trip is shop -> job -> shop with the trailer ──
+  const mobilization: MobilizationResult[] = [];
+  for (const m of mobs) {
+    const trips = Math.max(0, Math.round(m.trips));
+    if (trips === 0) continue;
+    const truck = (m.truckId && fleet.find((t) => t.id === m.truckId)) || jobTrucks[0] || fleet[0];
+    if (!truck) {
+      warnings.push(`No truck set up to haul the ${m.name} — its trips aren't counted.`);
+      continue;
+    }
+    if (s.shopMiles === null || !Number.isFinite(s.shopMiles)) {
+      warnings.push("Shop address isn't set — trips hauling machines out aren't counted.");
+      continue;
+    }
+    const miles = trips * 2 * s.shopMiles;
+    // Driving, plus loading and strapping down at each end of each trip.
+    const hours = miles / mph + (trips * s.loadMinutes) / 60;
+    const cents = fuelCents(miles, truck.mpg, priceOf(truck, s)) + timeCents(hours, truck.costPerHourCents);
+    mobilization.push({ key: m.key, name: m.name, truckName: truck.name, trips, miles, hours, cents });
+  }
+  const mobCents = mobilization.reduce((a, m) => a + m.cents, 0);
+
   const lineCents = results.reduce((a, r) => a + r.haulCents, 0);
-  const totalCents = lineCents + commute.cents;
-  const totalMiles = results.reduce((a, r) => a + r.miles, 0) + commute.miles;
-  const totalHours = results.reduce((a, r) => a + r.hours, 0) + commute.hours;
+  const totalCents = lineCents + commute.cents + mobCents;
+  const totalMiles = results.reduce((a, r) => a + r.miles, 0) + commute.miles + mobilization.reduce((a, m) => a + m.miles, 0);
+  const totalHours = results.reduce((a, r) => a + r.hours, 0) + commute.hours + mobilization.reduce((a, m) => a + m.hours, 0);
 
   return {
     lines: results,
     pickupStops,
+    mobilization,
     commute,
     trucksUsed: used.map((t) => ({ id: t.id, name: t.name, loads: loadsPerTruck.get(t.id) ?? 0 })),
     totalCents,
@@ -355,7 +410,7 @@ export function bulkLineHaulCents(
     const t = trucks.find((x) => x.id === ld.truckId)!;
     const miles = 2 * oneWayMiles;
     const hours = miles / mph + s.loadMinutes / 60;
-    cents += fuelCents(miles, t.mpg, s.dieselCentsPerGal) + timeCents(hours, t.costPerHourCents);
+    cents += fuelCents(miles, t.mpg, priceOf(t, s)) + timeCents(hours, t.costPerHourCents);
   }
   return { cents, loads: loads.length };
 }
@@ -369,5 +424,5 @@ export function pickupTripCents(
   const mph = s.avgMph > 0 ? s.avgMph : 35;
   const miles = 2 * oneWayMiles;
   const hours = miles / mph + s.pickupStopMinutes / 60;
-  return fuelCents(miles, truck.mpg, s.dieselCentsPerGal) + timeCents(hours, truck.costPerHourCents);
+  return fuelCents(miles, truck.mpg, priceOf(truck, s)) + timeCents(hours, truck.costPerHourCents);
 }

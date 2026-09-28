@@ -16,28 +16,51 @@
  * Nothing here ever silently prices a trip at zero.
  */
 
-import type { Material, Profile, Supplier, TruckRow } from "../db/schema";
+import type { EquipmentRow, Material, Profile, Supplier, TrailerRow, TruckRow } from "../db/schema";
 import { bulkLoad } from "../earthwork/quantity";
 import { haversineMiles, type LatLng } from "../geo/geo";
 import { geocodePlace, geocodeStore } from "../geo/geocode";
 import { roadDistance } from "../geo/routing";
-import { planHaul, type HaulLine, type HaulPlan, type Truck } from "../haul/plan";
+import { centsFor, type FuelKind, type FuelPrices } from "../haul/fuel";
+import { machineFuel, machineLabel, type Machine, type MachineLine, type MachineUse } from "../haul/machines";
+import { planHaul, type HaulLine, type HaulPlan, type Mobilization, type Truck } from "../haul/plan";
 import { haulModeFor, rankSubstitutes, type Candidate, type Distance, type Priced, type RankContext } from "../haul/rank";
-import type { DieselPrice } from "../haul/fuel";
 import { fromCents, fromMilli } from "../money";
 import { mapLimit, settle } from "../net";
 import { computeDeposits, computeTotals, type BuildOptions, type BuiltEstimate, type BuiltLine } from "./build";
 import type { LineAlternative } from "./schema";
 
-export function toTruck(t: TruckRow): Truck {
+/**
+ * A truck as the planner sees it. A truck pulling a dump trailer hauls bulk,
+ * and its load is the trailer's — a pickup with a 7x14 dump trailer is a
+ * 5-ton rock hauler, not a 1-ton pickup. Its miles are costed at its own fuel.
+ */
+export function toTruck(t: TruckRow, trailersById: Map<string, TrailerRow> = new Map(), fuel?: FuelPrices): Truck {
+  const tr = t.trailerId ? trailersById.get(t.trailerId) : undefined;
+  const pullsDump = Boolean(tr && tr.isActive && tr.kind === "dump");
+  const ownDump = t.kind !== "pickup";
   return {
     id: t.id,
-    name: t.name,
-    kind: t.kind === "pickup" ? "pickup" : "dump",
-    capacityTons: t.capacityTonsMilli / 1000,
-    capacityCuYd: t.capacityCuYdMilli / 1000,
+    name: pullsDump ? `${t.name} + ${tr!.name}` : t.name,
+    kind: ownDump || pullsDump ? "dump" : "pickup",
+    capacityTons: (pullsDump ? tr!.capacityTonsMilli : t.capacityTonsMilli) / 1000,
+    capacityCuYd: (pullsDump ? tr!.capacityCuYdMilli : t.capacityCuYdMilli) / 1000,
     mpg: t.mpgTenths / 10,
     costPerHourCents: t.costPerHourCents,
+    fuelCentsPerGal: fuel ? centsFor(fuel, t.fuel === "gas" ? "gas" : "diesel") : undefined,
+  };
+}
+
+export function toMachine(e: EquipmentRow): Machine {
+  const fuel: FuelKind = e.fuel === "gas" ? "gas" : e.fuel === "diesel" ? "diesel" : "offroad";
+  return {
+    id: e.id,
+    name: e.name,
+    kind: e.kind,
+    fuel,
+    galPerHour: e.galPerHourTenths / 10,
+    trailerId: e.trailerId,
+    haulTrips: e.trailerId ? Math.max(0, e.haulTrips) : 0,
   };
 }
 
@@ -94,6 +117,11 @@ export function matchSupplier(source: string, suppliers: Supplier[], job: LatLng
 
 export interface HaulDetail {
   diesel: { centsPerGal: number; label: string; source: string };
+  /** Gas (for gas trucks) and off-road diesel (for machines), when priced. */
+  fuel?: { gas: { centsPerGal: number; label: string }; offroad: { centsPerGal: number; label: string } };
+  /** Machine hours and the fuel they burn. */
+  machines?: MachineLine[];
+  machineCents?: number;
   trucksForJob: number;
   shopMiles: number | null;
   distanceSource: "road" | "approx";
@@ -105,6 +133,7 @@ export interface HaulDetail {
     trucksUsed: { name: string; loads: number }[];
     commute: HaulPlan["commute"];
     pickupStops: { supplier: string; miles: number; cents: number; lines: number }[];
+    mobilization?: { name: string; truckName: string; trips: number; miles: number; cents: number }[];
     lines: { material: string; mode: string; loads: number; miles: number; haulCents: number; oneWayMiles: number | null; approx: boolean }[];
   } | null;
   switched: { from: string; to: string; savedCents: number }[];
@@ -116,10 +145,14 @@ export interface LocalityArgs {
   catalog: Material[];
   suppliers: Supplier[];
   trucks: TruckRow[];
+  trailers?: TrailerRow[];
+  equipment?: EquipmentRow[];
+  /** Engine hours per machine, already normalized. */
+  machines?: MachineUse[];
   profile: Pick<Profile, "avgMph" | "loadMinutes" | "pickupStopMinutes" | "defaultHaulMiles" | "shopLat" | "shopLng">;
   job: LatLng | null;
   trucksForJob: number;
-  diesel: DieselPrice;
+  fuel: FuelPrices;
   /** "City, ST" for geocoding bare store names. */
   bias: string;
   buildOpts: BuildOptions;
@@ -207,10 +240,31 @@ export async function applyLocality(
   args: LocalityArgs
 ): Promise<{ built: BuiltEstimate; detail: HaulDetail }> {
   const warnings: string[] = [];
-  const fleet = args.trucks.filter((t) => t.isActive).map(toTruck);
+  const diesel = args.fuel.diesel;
+  const trailersById = new Map((args.trailers ?? []).map((t) => [t.id, t]));
+  const fleet = args.trucks.filter((t) => t.isActive).map((t) => toTruck(t, trailersById, args.fuel));
+
+  // Machine fuel doesn't depend on distance; work it out up front.
+  const machinesAll = (args.equipment ?? []).map(toMachine);
+  const mf = machineFuel(args.machines ?? [], machinesAll, {
+    diesel: diesel.centsPerGal,
+    gas: args.fuel.gas.centsPerGal,
+    offroad: args.fuel.offroad.centsPerGal,
+  });
+  const withMachines = (b: BuiltEstimate): BuiltEstimate => ({
+    ...b,
+    machineCents: mf.totalCents,
+    machineLabel: machineLabel(mf.lines),
+  });
 
   const baseDetail: HaulDetail = {
-    diesel: { centsPerGal: args.diesel.centsPerGal, label: args.diesel.label, source: args.diesel.source },
+    diesel: { centsPerGal: diesel.centsPerGal, label: diesel.label, source: diesel.source },
+    fuel: {
+      gas: { centsPerGal: args.fuel.gas.centsPerGal, label: args.fuel.gas.label },
+      offroad: { centsPerGal: args.fuel.offroad.centsPerGal, label: args.fuel.offroad.label },
+    },
+    machines: mf.lines,
+    machineCents: mf.totalCents,
     trucksForJob: args.trucksForJob,
     shopMiles: null,
     distanceSource: "approx",
@@ -227,7 +281,7 @@ export async function applyLocality(
 
   if (!args.job) {
     warnings.push("Couldn't find the job address on a map, so hauling wasn't computed from distance.");
-    return { built: computeTotals(withDeposits(args.built), args.buildOpts), detail: baseDetail };
+    return { built: computeTotals(withMachines(withDeposits(args.built)), args.buildOpts), detail: baseDetail };
   }
 
   const suppliersById = new Map(args.suppliers.map((s) => [s.id, s]));
@@ -243,7 +297,7 @@ export async function applyLocality(
   };
 
   const settings = {
-    dieselCentsPerGal: args.diesel.centsPerGal,
+    dieselCentsPerGal: diesel.centsPerGal,
     avgMph: args.profile.avgMph,
     loadMinutes: args.profile.loadMinutes,
     pickupStopMinutes: args.profile.pickupStopMinutes,
@@ -314,7 +368,7 @@ export async function applyLocality(
   // ── haul plan ──
   if (fleet.length === 0) {
     warnings.push("No trucks set up yet — hauling uses the AI's delivery guess. Add your trucks in Settings.");
-    const b = computeTotals(withDeposits({ ...args.built, lines }), args.buildOpts);
+    const b = computeTotals(withMachines(withDeposits({ ...args.built, lines })), args.buildOpts);
     return {
       built: b,
       detail: { ...baseDetail, shopMiles: dist.shopMiles, distanceSource: dist.anyRoad ? "road" : "approx", switched },
@@ -363,11 +417,28 @@ export async function applyLocality(
     };
   });
 
-  const plan = planHaul(haulLines, fleet, {
-    ...settings,
-    trucksForJob: args.trucksForJob,
-    shopMiles: dist.shopMiles,
-  });
+  // Machines that ride a trailer out: pulled by the truck that has that
+  // trailer hitched, if any, otherwise the job's lead truck.
+  const mobs: Mobilization[] = mf.lines
+    .map((l) => machinesAll.find((m) => m.id === l.equipmentId)!)
+    .filter((m) => m && m.haulTrips > 0)
+    .map((m) => ({
+      key: m.id,
+      name: m.name,
+      trips: m.haulTrips,
+      truckId: args.trucks.find((t) => t.isActive && t.trailerId && t.trailerId === m.trailerId)?.id ?? null,
+    }));
+
+  const plan = planHaul(
+    haulLines,
+    fleet,
+    {
+      ...settings,
+      trucksForJob: args.trucksForJob,
+      shopMiles: dist.shopMiles,
+    },
+    mobs
+  );
   warnings.push(...plan.warnings);
 
   if (assumedCount > 0) {
@@ -383,12 +454,14 @@ export async function applyLocality(
 
   const loads = plan.totalLoads;
   const stops = plan.pickupStops.length;
+  const machineTrips = plan.mobilization.reduce((a, m) => a + m.trips, 0);
   const labelParts = [
     loads ? `${loads} load${loads === 1 ? "" : "s"}` : "",
     stops ? `${stops} store run${stops === 1 ? "" : "s"}` : "",
+    machineTrips ? `${machineTrips} machine trip${machineTrips === 1 ? "" : "s"}` : "",
     plan.commute.trucks ? `${plan.commute.trucks} truck${plan.commute.trucks === 1 ? "" : "s"}` : "",
     `${Math.round(plan.totalMiles)} mi${dist.anyRoad ? "" : " (approx)"}`,
-    `diesel $${(args.diesel.centsPerGal / 100).toFixed(2)}`,
+    `diesel $${(diesel.centsPerGal / 100).toFixed(2)}`,
   ].filter(Boolean);
 
   const withHaul: BuiltEstimate = {
@@ -400,7 +473,7 @@ export async function applyLocality(
     haulLabel: labelParts.join(" · "),
   };
 
-  const built = computeTotals(withDeposits(withHaul), args.buildOpts);
+  const built = computeTotals(withMachines(withDeposits(withHaul)), args.buildOpts);
 
   return {
     built,
@@ -422,6 +495,13 @@ export async function applyLocality(
           miles: p.miles,
           cents: p.cents,
           lines: p.lineKeys.length,
+        })),
+        mobilization: plan.mobilization.map((m) => ({
+          name: m.name,
+          truckName: m.truckName,
+          trips: m.trips,
+          miles: m.miles,
+          cents: m.cents,
         })),
         lines: plan.lines.map((pl) => ({
           material: pl.material,

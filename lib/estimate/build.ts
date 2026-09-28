@@ -53,6 +53,8 @@ export interface ModelOutput {
   catalog_lines?: ModelCatalogLine[];
   custom_lines?: ModelCustomLine[];
   delivery?: { low: number; high: number; source?: string };
+  /** Engine hours for the shop's own machines, by equipment id. */
+  machines?: { equipmentId: string; hours: number; basis?: string }[];
   clarifications_needed?: string[];
   notes?: string;
 }
@@ -103,6 +105,9 @@ export interface BuiltEstimate {
   /** "computed" = locality engine; "model" = the model's guess; "none". */
   haulSource: "computed" | "model" | "none";
   haulLabel: string;
+  /** Fuel the machines burn on site. Taxed along with hauling. */
+  machineCents: number;
+  machineLabel: string;
   depositCents: number;
   deposits: DepositLine[];
   taxLowCents: number;
@@ -236,6 +241,8 @@ export function buildEstimate(
     deliveryHighCents: delHigh,
     haulSource: delHigh > 0 ? "model" : "none",
     haulLabel: output.delivery?.source ? `Delivery (estimated) — ${output.delivery.source}` : "Delivery (estimated)",
+    machineCents: 0,
+    machineLabel: "",
     depositCents: 0,
     deposits: [],
     taxLowCents: 0,
@@ -269,8 +276,11 @@ export function computeTotals(b: BuiltEstimate, opts: BuildOptions): BuiltEstima
     subHigh += extendCents(l.qtyMilli, l.unitHighCents);
   }
 
-  const haulLowBase = opts.taxHaul ? b.deliveryLowCents : 0;
-  const haulHighBase = opts.taxHaul ? b.deliveryHighCents : 0;
+  // Machine fuel is taxed exactly like hauling: both are the shop's running
+  // costs passed through on the quote.
+  const machine = b.machineCents ?? 0;
+  const haulLowBase = opts.taxHaul ? b.deliveryLowCents + machine : 0;
+  const haulHighBase = opts.taxHaul ? b.deliveryHighCents + machine : 0;
   const depBase = opts.taxDeposits ? b.depositCents : 0;
 
   const taxLow = applyBps(subLow + haulLowBase + depBase, opts.taxRateBps);
@@ -282,8 +292,10 @@ export function computeTotals(b: BuiltEstimate, opts: BuildOptions): BuiltEstima
     subtotalHighCents: subHigh,
     taxLowCents: taxLow,
     taxHighCents: taxHigh,
-    totalLowCents: subLow + b.deliveryLowCents + b.depositCents + taxLow,
-    totalHighCents: subHigh + b.deliveryHighCents + b.depositCents + taxHigh,
+    machineCents: machine,
+    machineLabel: b.machineLabel ?? "",
+    totalLowCents: subLow + b.deliveryLowCents + machine + b.depositCents + taxLow,
+    totalHighCents: subHigh + b.deliveryHighCents + machine + b.depositCents + taxHigh,
     catalogLineCount: b.lines.filter((l) => l.fromCatalog).length,
     customLineCount: b.lines.filter((l) => !l.fromCatalog).length,
   };
@@ -357,6 +369,18 @@ export function toLineItems(built: BuiltEstimate, taxRateBps: number, opts: Pick
     });
   }
 
+  if ((built.machineCents ?? 0) > 0) {
+    items.push({
+      material: "Machine fuel",
+      qty: 1,
+      unit: "total",
+      low: fromCents(built.machineCents),
+      high: fromCents(built.machineCents),
+      source: built.machineLabel,
+      kind: "machine",
+    });
+  }
+
   if (built.depositCents > 0) {
     items.push({
       material: "Pallet deposits (refundable)",
@@ -369,7 +393,11 @@ export function toLineItems(built: BuiltEstimate, taxRateBps: number, opts: Pick
     });
   }
 
-  const scope = ["materials", opts.taxHaul ? "hauling" : "", opts.taxDeposits ? "deposits" : ""]
+  const scope = [
+    "materials",
+    opts.taxHaul ? ((built.machineCents ?? 0) > 0 ? "hauling + machine fuel" : "hauling") : "",
+    opts.taxDeposits ? "deposits" : "",
+  ]
     .filter(Boolean)
     .join(" + ");
   items.push({

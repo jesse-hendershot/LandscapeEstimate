@@ -77,7 +77,7 @@ export interface LineItem {
 
   // Everything below is optional so older saved estimates still render.
   /** material | haul | deposit | tax | total */
-  kind?: "material" | "haul" | "deposit" | "tax" | "total";
+  kind?: "material" | "haul" | "machine" | "deposit" | "tax" | "total";
   materialId?: string | null;
   fromCatalog?: boolean;
   /** How the quantity was worked out. */
@@ -178,8 +178,10 @@ export const isTax = (i: LineItem) =>
   i.kind ? i.kind === "tax" : /sales.?tax|iowa.*tax/i.test(i.material);
 export const isGrandTotal = (i: LineItem) =>
   i.kind ? i.kind === "total" : /grand.?total/i.test(i.material);
+export const isMachine = (i: LineItem) =>
+  i.kind ? i.kind === "machine" : /^machine fuel$/i.test(i.material.trim());
 export const isSpecial = (i: LineItem) =>
-  isDelivery(i) || isDeposit(i) || isTax(i) || isGrandTotal(i);
+  isDelivery(i) || isMachine(i) || isDeposit(i) || isTax(i) || isGrandTotal(i);
 
 /** Just the material rows — everything the subtotal is computed from. */
 export const materialRows = (items: LineItem[]) => items.filter((i) => !isSpecial(i));
