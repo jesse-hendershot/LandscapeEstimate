@@ -11,7 +11,7 @@ import { test } from "node:test";
 import type { Material, Supplier, TruckRow } from "../db/schema";
 import { applyBps } from "../money";
 import { buildEstimate, stripIds, toLineItems, type BuildOptions } from "./build";
-import { applyLocality } from "./locality";
+import { applyLocality, matchSupplier, storeBrand } from "./locality";
 
 delete process.env.OPENROUTESERVICE_API_KEY;
 
@@ -232,6 +232,38 @@ test("a supplier with no location uses the default distance and says so", async 
     job: JOB, trucksForJob: 1, diesel: DIESEL, bias: "", buildOpts: OPTS,
   });
   assert.ok(detail.warnings.some((w) => /assumed 15 mi/.test(w)), detail.warnings.join(" | "));
+});
+
+test("store names reduce to the store, not the branch or address", () => {
+  assert.equal(storeBrand("Menards – Iowa City, 2501 Muscatine Ave"), "menards");
+  assert.equal(storeBrand("Menards Iowa City"), "menards iowa city");
+  assert.equal(storeBrand("The Home Depot - Coralville"), "home depot");
+  assert.equal(storeBrand("Conklin Quarry and Mill"), "conklin quarry and mill");
+});
+
+test("a researched line from a store on file uses that store's real location", () => {
+  const m = matchSupplier("Menards – Iowa City, 2501 Muscatine Ave", SUPPLIERS, JOB);
+  assert.equal(m?.id, "sM");
+  assert.equal(matchSupplier("Lowe's of Cedar Rapids", SUPPLIERS, JOB), null);
+  // Two branches: the nearer one
+  const two = [...SUPPLIERS, supplier("sM2", "Menards – Cedar Rapids", north(25), { kind: "big_box" })];
+  assert.equal(matchSupplier("Menards", two, JOB)?.id, "sM");
+});
+
+test("researched store items join the catalog's stop at the same store", async () => {
+  const { built, detail } = await run({
+    catalog_lines: [{ catalogId: "fabric", qty: 1 }],
+    custom_lines: [
+      { name: "4 in sock pipe, 100 ft", unit: "roll", qty: 1, low: 55, high: 90, source: "Menards – Iowa City, 2501 Muscatine Ave" },
+      { name: "Pop-up emitter", unit: "each", qty: 1, low: 20, high: 25, source: "Menards Iowa City" },
+    ],
+  });
+  const stops = detail.plan?.pickupStops ?? [];
+  assert.equal(stops.length, 1, JSON.stringify(stops));
+  assert.equal(stops[0].lines, 3);
+  assert.ok(stops[0].miles > 7 && stops[0].miles < 9, `miles ${stops[0].miles}`); // 3 mi x 1.3, there and back
+  assert.equal(built.lines[1].source, "Menards Iowa City");
+  assert.ok(!detail.warnings.some((w) => /assumed/.test(w)), detail.warnings.join(" | "));
 });
 
 test("catalog ids are scrubbed out of the model's notes", () => {
