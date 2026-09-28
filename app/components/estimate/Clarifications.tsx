@@ -12,6 +12,9 @@ import { C } from "../../theme";
 export type ClarType = "yesno" | "choice" | "number" | "text";
 
 export function parseClar(q: string): { type: ClarType; choices?: string[] } {
+  // 0. The model tags plain yes/no questions: "Restore sod over the trench, yes or no?"
+  if (/,?\s*\(?\s*yes\s*(?:or|\/)\s*no\s*\)?\s*\??\s*$/i.test(q)) return { type: "yesno" };
+
   // 1. "X vs Y" anywhere in the question → choice
   const vsMatch =
     q.match(/\(([^)]{2,35})\s+vs\.?\s+([^)]{2,35})\)/i) ||
@@ -61,8 +64,13 @@ export function parseClar(q: string): { type: ClarType; choices?: string[] } {
     if (o1.length > 1 && o2.length > 1) return { type: "choice", choices: [o1, o2] };
   }
 
-  // 4. "confirm whether" without "or" → yes/no
-  if (/\b(confirm\s+whether|needs?\s+(an?\s+)?topsoil|needs?\s+(an?\s+)?amendment|do\s+you\s+want|should\s+(the|we)\b)/i.test(q) && !/\bor\b/i.test(q))
+  // 4. "confirm whether" without "or" → yes/no. Not for "How deep should the
+  // trench be?" — a how/what question wants a value, whatever verbs it uses.
+  if (
+    /\b(confirm\s+whether|needs?\s+(an?\s+)?topsoil|needs?\s+(an?\s+)?amendment|do\s+you\s+want|should\s+(the|we)\b)/i.test(q) &&
+    !/\bor\b/i.test(q) &&
+    !/^\s*(how|what|which|where|when)\b/i.test(q)
+  )
     return { type: "yesno" };
 
   // 5. Numeric question
