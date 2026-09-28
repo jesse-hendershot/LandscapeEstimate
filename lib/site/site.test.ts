@@ -6,7 +6,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 
-import { hasLocality, localityOf, normalizeQuery, parseCensus, parseNominatim } from "../geo/geocode";
+import { hasLocality, localityOf, normalizeQuery, parseCensus, parseNominatim, splitStore } from "../geo/geocode";
 import { parseOrs, pairKey } from "../geo/routing";
 import { parseEiaApi, parseEiaHistoryHtml } from "../haul/fuel";
 import { bearing, summarizeLot, summarizeProfile } from "./elevation";
@@ -48,6 +48,12 @@ test("address helpers", () => {
   assert.equal(localityOf("123 Main St, Iowa City, IA 52240"), "Iowa City, IA");
   assert.equal(localityOf("123 Main St"), "");
   assert.equal(normalizeQuery("  Menards – Iowa City,Hwy 1 W "), "menards - iowa city, hwy 1 w");
+});
+
+test("a store as the model writes it splits into store and town", () => {
+  assert.deepEqual(splitStore("Menards – Iowa City, 2501 Muscatine Ave"), { store: "Menards", town: "Iowa City" });
+  assert.deepEqual(splitStore("Menards - 2605 Naples Ave SW"), { store: "Menards", town: "" });
+  assert.deepEqual(splitStore("Hawkeye Landscape Supply (Coralville)"), { store: "Hawkeye Landscape Supply", town: "" });
 });
 
 test("parcel address parsing keeps the distinctive street word", () => {

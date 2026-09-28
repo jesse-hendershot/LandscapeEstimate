@@ -18,8 +18,8 @@
 
 import type { Material, Profile, Supplier, TruckRow } from "../db/schema";
 import { bulkLoad } from "../earthwork/quantity";
-import type { LatLng } from "../geo/geo";
-import { geocodePlace } from "../geo/geocode";
+import { haversineMiles, type LatLng } from "../geo/geo";
+import { geocodePlace, geocodeStore } from "../geo/geocode";
 import { roadDistance } from "../geo/routing";
 import { planHaul, type HaulLine, type HaulPlan, type Truck } from "../haul/plan";
 import { haulModeFor, rankSubstitutes, type Candidate, type Distance, type Priced, type RankContext } from "../haul/rank";
@@ -56,6 +56,40 @@ export function toCandidate(m: Material, suppliersById: Map<string, Supplier>): 
     supplierName: s?.name ?? m.supplier ?? "",
     deliveryFeeCents: s?.deliveryFeeCents ?? 0,
   };
+}
+
+/**
+ * The store part of a supplier name, lowercased: "Menards – Iowa City, 2501
+ * Muscatine Ave" and "Menards Iowa City" both start with "menards".
+ */
+export function storeBrand(text: string): string {
+  const head = text.split(/\s[-–—]\s|,|\(/)[0] ?? "";
+  return head
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/^the /, "")
+    .trim();
+}
+
+/**
+ * Which of the shop's own suppliers a researched line came from, if any.
+ *
+ * The model names the store it priced ("Menards – Iowa City, ...") but the
+ * street address it attaches is often invented. When the shop already has that
+ * store on file, its real location wins; with several branches, the one nearest
+ * the job.
+ */
+export function matchSupplier(source: string, suppliers: Supplier[], job: LatLng): Supplier | null {
+  const brand = storeBrand(source);
+  if (brand.length < 3) return null;
+  const same = (a: string, b: string) => a === b || a.startsWith(b + " ") || b.startsWith(a + " ");
+  const hits = suppliers.filter(
+    (s) => s.isActive && s.lat !== null && s.lng !== null && same(storeBrand(s.name), brand)
+  );
+  if (hits.length === 0) return null;
+  const miles = (s: Supplier) => haversineMiles(job, { lat: s.lat!, lng: s.lng! });
+  return hits.sort((a, b) => miles(a) - miles(b))[0];
 }
 
 export interface HaulDetail {
@@ -128,10 +162,18 @@ async function gatherDistances(args: LocalityArgs, job: LatLng) {
     byTownText.set(t, g ? await settle(toDist(g, "town", true), null, 9000) : null);
   });
 
-  // Researched lines: "Menards – Iowa City, Hwy 1 W"
+  // Researched lines: "Menards – Iowa City, Hwy 1 W". A store the shop has on
+  // file uses that location; anything else is looked up by name.
+  const sourceSupplier = new Map<string, Supplier>();
   const sources = [...new Set(args.built.lines.filter((l) => !l.fromCatalog && l.source.trim()).map((l) => l.source.trim()))];
   await mapLimit(sources, 1, async (src) => {
-    const g = await settle(geocodePlace(src, args.bias), null, 8000);
+    const known = matchSupplier(src, args.suppliers, job);
+    if (known) {
+      sourceSupplier.set(src, known);
+      bySource.set(src, bySupplier.get(known.id) ?? null);
+      return;
+    }
+    const g = await settle(geocodeStore(src, args.bias), null, 14000);
     bySource.set(src, g ? await settle(toDist(g, "supplier", true), null, 9000) : null);
   });
 
@@ -141,7 +183,7 @@ async function gatherDistances(args: LocalityArgs, job: LatLng) {
     shopMiles = d ? d.miles : null;
   }
 
-  return { bySupplier, byTownText, bySource, shopMiles, anyRoad };
+  return { bySupplier, byTownText, bySource, sourceSupplier, shopMiles, anyRoad };
 }
 
 function toAlternative(p: Priced): LineAlternative {
@@ -303,18 +345,21 @@ export async function applyLocality(
       };
     }
     const d = dist.bySource.get(l.source.trim()) ?? null;
+    const known = dist.sourceSupplier.get(l.source.trim());
     const bl = bulkLoad(l.qtyMilli, l.unit, { name: l.material, unit: l.unit });
     if (!d) assumedCount++;
+    if (known) lines[i] = { ...lines[i], source: known.name };
     return {
       key,
       material: l.material,
       mode: isBulk(l.unit) ? "dump" : "pickup",
       tons: bl?.tons,
       cuYd: bl?.cuYd,
-      supplierKey: `src:${l.source.trim().toLowerCase()}`,
-      supplierName: l.source.trim() || l.material,
+      // Same key as catalog lines from that store, so it's one stop, not two.
+      supplierKey: known ? known.id : `src:${l.source.trim().toLowerCase()}`,
+      supplierName: known ? known.name : l.source.trim() || l.material,
       oneWayMiles: d ? d.miles : args.profile.defaultHaulMiles,
-      milesApprox: true,
+      milesApprox: known && d ? d.approx : true,
     };
   });
 

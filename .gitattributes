@@ -1,0 +1,5 @@
+# Normalize line endings to LF in the repo regardless of platform checkout
+# settings. Without this, Windows' core.autocrlf can silently rewrite every
+# tracked text file to CRLF on checkout, which git then reports as a
+# full-file change even though nothing was actually edited.
+* text=auto eol=lf
