@@ -43,7 +43,12 @@ export default function RootLayout({
           live inside the body. Same category of drift as <SignedIn>, which was
           removed in Core 3 and now throws.
         */}
-        <ClerkProvider>
+        {/*
+          Sign-in lives in the app, not on Clerk's hosted Account Portal. The
+          portal's domain was never set up for production, so without these
+          every "Sign up" link and expired session lands on a dead host.
+        */}
+        <ClerkProvider signInUrl="/sign-in" signUpUrl="/sign-up">
           <SiteHeader />
           {children}
         </ClerkProvider>
