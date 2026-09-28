@@ -80,6 +80,13 @@ export interface BuiltLine {
   /** Set when a substitute replaced the model's pick; what it saved, delivered. */
   savedCents?: number;
   replaced?: string;
+  /**
+   * Where the unit price came from: starter | sheet | receipt | manual for
+   * catalog lines, "research" for lines the model priced from the web.
+   */
+  priceSource?: string;
+  /** "Conklin Quarry price sheet, 2026-09-29" */
+  priceLabel?: string;
 }
 
 export interface DepositLine {
@@ -201,6 +208,8 @@ export function buildEstimate(
       materialId: m.id,
       supplierId: m.supplierId ?? null,
       basis,
+      priceSource: m.priceSource ?? "manual",
+      priceLabel: m.priceSourceLabel ?? "",
     });
   }
 
@@ -225,6 +234,8 @@ export function buildEstimate(
       fromCatalog: false,
       materialId: null,
       basis,
+      priceSource: "research",
+      priceLabel: "Looked up online — not from your suppliers",
     });
   }
 
@@ -355,6 +366,8 @@ export function toLineItems(built: BuiltEstimate, taxRateBps: number, opts: Pick
     alternatives: l.alternatives,
     saved: l.savedCents ? fromCents(l.savedCents) : undefined,
     replaced: l.replaced,
+    priceSource: l.priceSource,
+    priceLabel: l.priceLabel,
   }));
 
   if (built.deliveryLowCents > 0 || built.deliveryHighCents > 0) {

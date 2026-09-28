@@ -14,6 +14,11 @@
  *
  * Which materials count as substitutes is the shop's call, made once in the
  * catalog. This file never invents an equivalence.
+ *
+ * A supplier's real price beats a starter placeholder. When the class has
+ * members priced from a supplier's sheet, receipt or the shop's own entry,
+ * a starter-priced member is never chosen over them, however cheap its
+ * placeholder looks — it's still shown as an alternative, marked.
  */
 
 import { bulkLoad, roundUpToIncrement, tonsPerCuYd, type MaterialShape } from "../earthwork/quantity";
@@ -28,6 +33,8 @@ export interface Candidate extends MaterialShape {
   supplierId: string | null;
   supplierName: string;
   deliveryFeeCents: number;
+  /** starter | sheet | receipt | manual */
+  priceSource?: string;
 }
 
 export interface Distance {
@@ -67,6 +74,7 @@ export interface Priced {
   distance: Distance | null;
   loads: number;
   isModelPick: boolean;
+  priceSource: string;
 }
 
 export interface RankResult {
@@ -75,6 +83,8 @@ export interface RankResult {
   /** Cents saved versus the model's own pick; 0 when the pick won. */
   savedCents: number;
   switched: boolean;
+  /** Why it switched: cheaper delivered, or a real supplier price replacing a placeholder. */
+  reason: "cheaper" | "supplier_price" | null;
 }
 
 export function haulModeFor(c: Pick<Candidate, "haul" | "unit">): HaulMode {
@@ -149,6 +159,7 @@ export function priceCandidate(
       : null),
     loads,
     isModelPick,
+    priceSource: c.priceSource ?? "manual",
   };
 }
 
@@ -169,7 +180,7 @@ export function rankSubstitutes(
   const self = priceCandidate(picked, qtyMilli, ctx, true);
 
   const cls = picked.specClass.trim().toLowerCase();
-  if (!cls) return { chosen: self, alternatives: [], savedCents: 0, switched: false };
+  if (!cls) return { chosen: self, alternatives: [], savedCents: 0, switched: false, reason: null };
 
   const others: Priced[] = [];
   for (const c of pool) {
@@ -181,14 +192,29 @@ export function rankSubstitutes(
   }
 
   const all = [self, ...others].sort((a, b) => a.landedCents - b.landedCents);
-  const best = all[0];
-  const switched = best !== self && self.landedCents - best.landedCents >= threshold;
-  const chosen = switched ? best : self;
+  const isReal = (p: Priced) => p.priceSource !== "starter";
+  const real = all.filter(isReal);
+
+  let chosen = self;
+  let reason: RankResult["reason"] = null;
+  if (!isReal(self) && real.length > 0) {
+    // The pick is a placeholder and a supplier price exists: use the supplier's.
+    chosen = real[0];
+    reason = "supplier_price";
+  } else {
+    const best = (real.length > 0 ? real : all)[0];
+    if (best !== self && self.landedCents - best.landedCents >= threshold) {
+      chosen = best;
+      reason = "cheaper";
+    }
+  }
+  const switched = chosen !== self;
 
   return {
     chosen,
     alternatives: all.filter((p) => p !== chosen).slice(0, 4),
-    savedCents: switched ? self.landedCents - chosen.landedCents : 0,
+    savedCents: switched ? Math.max(0, self.landedCents - chosen.landedCents) : 0,
     switched,
+    reason,
   };
 }

@@ -326,6 +326,9 @@ export function seedRowsFor(ownerId: string) {
     notes: m.notes,
     specClass: m.specClass ?? "",
     unitsPerPalletMilli: m.unitsPerPallet ? m.unitsPerPallet * 1000 : null,
+    // Placeholders until a supplier's sheet or receipt replaces them.
+    priceSource: "starter",
+    priceSourceLabel: "Starter price",
     isActive: true,
     // Seeded order becomes the initial "most common" order until real use
     // counts take over.

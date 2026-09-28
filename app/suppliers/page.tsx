@@ -237,6 +237,12 @@ export default function SuppliersPage() {
           Where your materials come from. Link each material to its supplier on the <Link href="/catalog" style={{ color: C.green, fontWeight: 700 }}>Materials</Link> page so every estimate
           can compare them by what they cost delivered to the job.
         </p>
+        <p style={{ fontSize: 16, margin: "-8px 0 20px" }}>
+          <Link href="/catalog?import=sheet" style={{ color: C.green, fontWeight: 700 }}>
+            📄 Import a supplier&apos;s price sheet →
+          </Link>{" "}
+          <span style={{ color: C.grey }}>photo, PDF or pasted text; their prices replace the starter ones.</span>
+        </p>
 
         <section style={card}>
           <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>

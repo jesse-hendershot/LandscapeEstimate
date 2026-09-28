@@ -23,6 +23,7 @@ import {
   lineEdits,
   type EstimateLineRow,
   type EstimateRow,
+  type Material,
   type Profile,
 } from "../db/schema";
 import { localityOf } from "../geo/geocode";
@@ -144,6 +145,8 @@ function rowToBuilt(l: EstimateLineRow): BuiltLine {
     haulCents: l.haulCents,
     miles: l.miles,
     alternatives: (l.alternatives as LineAlternative[] | null) ?? undefined,
+    priceSource: l.priceSource || undefined,
+    priceLabel: l.priceLabel || undefined,
   };
 }
 
@@ -301,6 +304,8 @@ const lineItemSchema = z.object({
   alternatives: z.array(z.any()).max(10).optional(),
   replaced: z.string().max(240).optional(),
   saved: z.number().optional(),
+  priceSource: z.string().max(20).optional(),
+  priceLabel: z.string().max(240).optional(),
 });
 
 export const estimatePatchSchema = z
@@ -323,12 +328,24 @@ export const estimatePatchSchema = z
 
 export type EstimatePatch = z.infer<typeof estimatePatchSchema>;
 
-function itemsToBuilt(items: LineItem[], catalogIds: Set<string>): BuiltLine[] {
+/**
+ * Where an edited line's price came from. The table marks a price the
+ * estimator typed as "manual"; a line added by hand with no mark is theirs too,
+ * unless it's a catalog item at the catalog's own price.
+ */
+function provenance(i: LineItem, m: Material | undefined): Pick<BuiltLine, "priceSource" | "priceLabel"> {
+  if (i.priceSource) return { priceSource: i.priceSource, priceLabel: i.priceLabel ?? "" };
+  if (m && toCents(i.low) === m.unitCostCents) return { priceSource: m.priceSource, priceLabel: m.priceSourceLabel };
+  return { priceSource: "manual", priceLabel: "Entered on this estimate" };
+}
+
+function itemsToBuilt(items: LineItem[], catalogById: Map<string, Material>): BuiltLine[] {
   return items
     .filter((i) => !isSpecial(i) && i.material.trim() && i.qty > 0)
     .map((i) => {
-      const catalogLine = Boolean(i.materialId && catalogIds.has(i.materialId));
+      const catalogLine = Boolean(i.materialId && catalogById.has(i.materialId));
       return {
+        ...provenance(i, catalogLine ? catalogById.get(i.materialId!) : undefined),
         material: i.material.trim(),
         qtyMilli: toMilli(i.qty),
         unit: i.unit,
@@ -371,10 +388,10 @@ export async function saveEstimate(profile: Profile, id: string, patch: Estimate
       listEquipment(profile.id),
       currentFuel(profile),
     ]);
-    const catalogIds = new Set(catalog.map((m) => m.id));
+    const catalogById = new Map(catalog.map((m) => [m.id, m]));
     const prevItems = Array.isArray(row.editedLines) ? (row.editedLines as LineItem[]) : originalItems(row, lines);
     const items = (patch.lines as LineItem[] | undefined) ?? prevItems;
-    const builtLines = itemsToBuilt(items, catalogIds);
+    const builtLines = itemsToBuilt(items, catalogById);
 
     const buildOpts: BuildOptions = {
       taxRateBps: row.taxRateBps,

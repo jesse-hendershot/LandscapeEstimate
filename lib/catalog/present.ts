@@ -2,6 +2,8 @@ import type { Material } from "../db/schema";
 import { fromCents, toCents } from "../money";
 import type { CreateMaterialInput, UpdateMaterialInput } from "./validate";
 
+export type PriceSource = "starter" | "sheet" | "receipt" | "manual";
+
 /** Cents and thousandths live in the database; dollars and tons cross the wire. */
 export function presentMaterial(m: Material) {
   return {
@@ -24,6 +26,8 @@ export function presentMaterial(m: Material) {
     isActive: m.isActive,
     useCount: m.useCount,
     priceUpdatedAt: m.priceUpdatedAt.toISOString(),
+    priceSource: m.priceSource as PriceSource,
+    priceSourceLabel: m.priceSourceLabel,
   };
 }
 

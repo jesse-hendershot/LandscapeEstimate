@@ -9,23 +9,34 @@ import { earthKind } from "@/lib/earthwork/factors";
 import { UNITS } from "@/lib/estimate/schema";
 import { geocodeAddress, localityOf } from "@/lib/geo/geocode";
 import { toCents } from "@/lib/money";
-import { createSupplier, getSupplier } from "@/lib/suppliers/repo";
+import { createSupplier, getSupplier, updateSupplier } from "@/lib/suppliers/repo";
+
+const specClass = z.string().trim().max(80).optional();
 
 const itemSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("update"), materialId: z.string().uuid(), unitCost: z.number().positive().max(10_000) }),
+  z.object({ action: z.literal("update"), materialId: z.string().uuid(), unitCost: z.number().positive().max(10_000), specClass }),
   z.object({
     action: z.literal("new"),
     name: z.string().trim().min(2).max(160),
     unit: z.enum(UNITS as unknown as [string, ...string[]]),
     unitCost: z.number().positive().max(10_000),
     category: z.enum(CATEGORIES as unknown as [string, ...string[]]).optional(),
+    specClass,
   }),
 ]);
 
 const bodySchema = z.object({
+  kind: z.enum(["receipt", "sheet"]).default("receipt"),
+  /** Date printed on the sheet or receipt. */
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).or(z.literal("")).default(""),
   supplierId: z.string().uuid().nullish(),
-  newSupplier: z.object({ name: z.string().trim().min(2).max(160), address: z.string().trim().max(240).default("") }).nullish(),
-  items: z.array(itemSchema).min(1).max(60),
+  newSupplier: z
+    .object({ name: z.string().trim().min(2).max(160), address: z.string().trim().max(240).default(""), phone: z.string().trim().max(40).default("") })
+    .nullish(),
+  /** From a price sheet: save this as the supplier's flat delivery fee. */
+  deliveryFee: z.number().min(0).max(5000).nullish(),
+  deliveryText: z.string().trim().max(400).optional(),
+  items: z.array(itemSchema).min(1).max(120),
 });
 
 /** Guess a category for a new material from its name. */
@@ -44,11 +55,12 @@ function categoryFor(name: string): string {
 }
 
 /**
- * POST /api/catalog/scan/apply — apply the receipt rows the estimator ticked.
- * Every price here was read off paper and approved by a person.
+ * POST /api/catalog/scan/apply — apply the rows the estimator ticked.
+ * Every price here was read off the supplier's own paper and approved by a
+ * person, and each one says so: "Conklin Quarry price sheet, 2026-09-29".
  */
 export async function POST(req: NextRequest) {
-  return handle("apply receipt", async () => {
+  return handle("apply prices", async () => {
     const profile = await requireProfile();
     const body = parseOr400(bodySchema, await req.json());
 
@@ -64,7 +76,9 @@ export async function POST(req: NextRequest) {
         : null;
       const s = await createSupplier(profile.id, {
         name: body.newSupplier.name,
+        kind: body.kind === "sheet" ? "quarry" : "yard",
         address: body.newSupplier.address,
+        phone: body.newSupplier.phone,
         lat: g?.lat ?? null,
         lng: g?.lng ?? null,
       });
@@ -72,16 +86,36 @@ export async function POST(req: NextRequest) {
       supplierName = s.name;
     }
 
+    if (supplierId && body.deliveryFee !== undefined && body.deliveryFee !== null) {
+      await updateSupplier(profile.id, supplierId, {
+        deliveryFeeCents: toCents(body.deliveryFee),
+        ...(body.deliveryText ? { notes: `Delivery (from their price sheet): ${body.deliveryText}`.slice(0, 600) } : {}),
+      });
+    }
+
+    const source = body.kind === "sheet" ? "sheet" : "receipt";
+    const label = [supplierName || "Supplier", body.kind === "sheet" ? "price sheet" : "receipt"].join(" ") + (body.date ? `, ${body.date}` : "");
+
     let updated = 0;
     let created = 0;
     for (const item of body.items) {
       if (item.action === "update") {
         const m = await getMaterial(profile.id, item.materialId);
         if (!m) continue;
-        await updateMaterial(profile.id, m.id, {
-          unitCostCents: toCents(item.unitCost),
-          ...(supplierId && !m.supplierId ? { supplierId } : {}),
-        });
+        // Never let one supplier's paper reprice another supplier's row.
+        if (supplierId && m.supplierId && m.supplierId !== supplierId) continue;
+        await updateMaterial(
+          profile.id,
+          m.id,
+          {
+            unitCostCents: toCents(item.unitCost),
+            priceSource: source,
+            priceSourceLabel: label,
+            ...(supplierId && !m.supplierId ? { supplierId, supplier: supplierName } : {}),
+            ...(item.specClass !== undefined && item.specClass !== m.specClass ? { specClass: item.specClass } : {}),
+          },
+          { observedOn: body.date }
+        );
         updated++;
       } else {
         const base = {
@@ -90,13 +124,16 @@ export async function POST(req: NextRequest) {
           unitCostCents: toCents(item.unitCost),
           supplierId,
           supplier: supplierName,
-          notes: "Added from a scanned receipt.",
+          specClass: item.specClass ?? "",
+          priceSource: source,
+          priceSourceLabel: label,
+          notes: body.kind === "sheet" ? "Added from a price sheet." : "Added from a scanned receipt.",
         };
         try {
-          await createMaterial(profile.id, { ...base, name: item.name });
+          await createMaterial(profile.id, { ...base, name: item.name }, { observedOn: body.date });
         } catch {
           // Same name already in the catalog: keep both, distinguished by supplier.
-          await createMaterial(profile.id, { ...base, name: `${item.name} — ${supplierName || "receipt"}`.slice(0, 160) });
+          await createMaterial(profile.id, { ...base, name: `${item.name} — ${supplierName || source}`.slice(0, 160) }, { observedOn: body.date });
         }
         created++;
       }

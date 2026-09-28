@@ -2,6 +2,7 @@
 
 import { useCallback, useMemo, useRef, useState } from "react";
 
+import PriceTag from "../components/PriceTag";
 import { C, fmt, isStale, since } from "../theme";
 
 /**
@@ -46,6 +47,10 @@ export interface CatalogMaterial {
   isActive: boolean;
   useCount: number;
   priceUpdatedAt: string;
+  /** starter | sheet | receipt | manual */
+  priceSource: string;
+  /** "Conklin Quarry price sheet, 2026-09-29" */
+  priceSourceLabel: string;
 }
 
 export interface SupplierOption {
@@ -78,12 +83,17 @@ const inputBase: React.CSSProperties = {
 export default function CatalogTable({
   initial,
   suppliers,
+  openImport,
 }: {
   initial: CatalogMaterial[];
   suppliers: SupplierOption[];
+  /** Open the import panel on arrival (from the Suppliers page). */
+  openImport?: ImportKind;
 }) {
   const [rows, setRows] = useState<CatalogMaterial[]>(initial);
-  const [scanning, setScanning] = useState(false);
+  const [importing, setImporting] = useState<ImportKind | null>(openImport ?? null);
+  const [applied, setApplied] = useState("");
+  const [onlyStarter, setOnlyStarter] = useState(false);
   const groups = useMemo(
     () => [...new Set(rows.map((r) => r.specClass).filter(Boolean))].sort(),
     [rows]
@@ -175,8 +185,9 @@ export default function CatalogTable({
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return rows;
-    return rows.filter(
+    const base = onlyStarter ? rows.filter((r) => r.priceSource === "starter") : rows;
+    if (!q) return base;
+    return base.filter(
       (r) =>
         r.name.toLowerCase().includes(q) ||
         r.category.toLowerCase().includes(q) ||
@@ -184,7 +195,7 @@ export default function CatalogTable({
         r.specClass.toLowerCase().includes(q) ||
         (suppliers.find((x) => x.id === r.supplierId)?.name.toLowerCase().includes(q) ?? false)
     );
-  }, [rows, query, suppliers]);
+  }, [rows, query, suppliers, onlyStarter]);
 
   const grouped = useMemo(() => {
     const map = new Map<string, CatalogMaterial[]>();
@@ -201,6 +212,8 @@ export default function CatalogTable({
   }, [filtered]);
 
   const staleCount = rows.filter((r) => isStale(r.priceUpdatedAt)).length;
+  const starterCount = rows.filter((r) => r.priceSource === "starter").length;
+  const fromSupplierCount = rows.filter((r) => r.priceSource === "sheet" || r.priceSource === "receipt").length;
 
   return (
     <div style={{ maxWidth: 1180, margin: "0 auto", padding: "24px 20px 64px" }}>
@@ -218,6 +231,7 @@ export default function CatalogTable({
         </h1>
         <span style={{ fontSize: 13, color: C.grey }}>
           {rows.length} material{rows.length === 1 ? "" : "s"}
+          {fromSupplierCount > 0 && ` · ${fromSupplierCount} priced from your suppliers`}
         </span>
       </div>
 
@@ -226,6 +240,40 @@ export default function CatalogTable({
         researched or guessed for anything on this list, so keeping it current is
         the whole job.
       </p>
+
+      {starterCount > 0 && (
+        <div
+          style={{
+            background: "#FFF4E0",
+            border: `1px solid ${C.amber}`,
+            borderRadius: 4,
+            padding: "10px 12px",
+            fontSize: 13,
+            marginBottom: 12,
+            display: "flex",
+            gap: 10,
+            alignItems: "center",
+            flexWrap: "wrap",
+          }}
+        >
+          <span style={{ flex: "1 1 320px" }}>
+            <strong>{starterCount}</strong> price{starterCount === 1 ? " is a starter placeholder" : "s are starter placeholders"}, not
+            from any supplier. Import your quarry&apos;s price sheet to replace them — estimates flag every line that still uses one.
+          </span>
+          <button type="button" onClick={() => setOnlyStarter((v) => !v)} style={{ ...miniBtn(C.black), border: `1px solid ${C.amber}`, padding: "5px 10px", fontSize: 13 }}>
+            {onlyStarter ? "Show all" : "Show them"}
+          </button>
+          <button type="button" onClick={() => setImporting("sheet")} style={{ background: C.green, color: C.white, border: "none", borderRadius: 4, padding: "6px 12px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+            📄 Import a price sheet
+          </button>
+        </div>
+      )}
+
+      {applied && (
+        <div role="status" style={{ background: C.lgn, border: `1px solid ${C.green}`, borderRadius: 4, padding: "8px 12px", fontSize: 13, marginBottom: 12, color: C.green, fontWeight: 600 }}>
+          ✓ {applied}
+        </div>
+      )}
 
       {staleCount > 0 && (
         <div
@@ -275,9 +323,9 @@ export default function CatalogTable({
         </button>
         <button
           type="button"
-          onClick={() => setScanning((v) => !v)}
+          onClick={() => setImporting((v) => (v ? null : "sheet"))}
           style={{
-            background: scanning ? C.white : C.amber,
+            background: importing ? C.white : C.amber,
             color: C.black,
             border: `1px solid ${C.amber}`,
             borderRadius: 4,
@@ -287,17 +335,20 @@ export default function CatalogTable({
             cursor: "pointer",
           }}
         >
-          {scanning ? "Close scanner" : "📷 Scan a receipt"}
+          {importing ? "Close" : "📄 Supplier prices (sheet or receipt)"}
         </button>
       </div>
 
-      {scanning && (
-        <ScanReceipt
+      {importing && (
+        <PriceImport
+          key={importing}
+          kind={importing}
           suppliers={suppliers}
-          onApplied={async () => {
+          onApplied={async (msg) => {
             const res = await fetch("/api/catalog");
             if (res.ok) setRows((await res.json()).materials);
-            setScanning(false);
+            setApplied(msg);
+            setImporting(null);
           }}
         />
       )}
@@ -353,9 +404,7 @@ export default function CatalogTable({
                   {/* Coverage gets the slack. It is the longest field and the
                       one that was colliding with its neighbour. */}
                   <Th style={{ width: "auto" }}>Coverage</Th>
-                  <Th style={{ width: 116, textAlign: "right", paddingLeft: 16 }}>
-                    Price set
-                  </Th>
+                  <Th style={{ width: 200, paddingLeft: 16 }}>Price from</Th>
                   <Th style={{ width: 80 }} />
                 </tr>
               </thead>
@@ -497,10 +546,13 @@ function Row({
           />
         </Td>
 
-        <Td style={{ textAlign: "right", paddingLeft: 16, whiteSpace: "nowrap" }}>
-          <span style={{ fontSize: 12, color: stale ? C.red : C.grey }}>
+        <Td style={{ paddingLeft: 16 }}>
+          <div style={{ maxWidth: 190 }}>
+            <PriceTag source={m.priceSource} label={m.priceSourceLabel} small wrap />
+          </div>
+          <div style={{ fontSize: 12, color: stale ? C.red : C.grey, padding: "2px 2px 0" }}>
             {since(m.priceUpdatedAt)}
-          </span>
+          </div>
         </Td>
 
         <Td>
@@ -828,14 +880,24 @@ function Details({
   );
 }
 
-// ── receipt scanner ────────────────────────────────────────────────────────
+// ── price sheets and receipts ──────────────────────────────────────────────
 
 interface ScanProposal {
-  line: { description: string; qty: number | null; unit: string | null; unitPrice: number | null };
-  match: { materialId: string; name: string; unit: string; currentUnitCost: number } | null;
+  line: { description: string; qty: number | null; unit: string | null; unitPrice: number | null; notes?: string };
+  match: {
+    materialId: string;
+    name: string;
+    unit: string;
+    currentUnitCost: number;
+    priceSource: string;
+    willLink: boolean;
+  } | null;
   action: "update" | "new" | "skip";
   flag: string;
+  specClass: string;
 }
+
+type ImportRow = ScanProposal & { use: boolean; name: string; unit: string; price: string; group: string };
 
 async function toJpeg(file: File, max = 1600): Promise<{ data: string; mediaType: string }> {
   const bmp = await createImageBitmap(file);
@@ -848,70 +910,160 @@ async function toJpeg(file: File, max = 1600): Promise<{ data: string; mediaType
   return { data: url.split(",")[1], mediaType: "image/jpeg" };
 }
 
-function ScanReceipt({ suppliers, onApplied }: { suppliers: SupplierOption[]; onApplied: () => void }) {
+function toBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(",")[1] ?? "");
+    r.onerror = () => reject(new Error("Couldn't open that file"));
+    r.readAsDataURL(file);
+  });
+}
+
+const today = () => new Date().toISOString().slice(0, 10);
+
+export type ImportKind = "sheet" | "receipt";
+
+/**
+ * Supplier prices in, from the supplier's own paper: a quarry's price list
+ * (photo, PDF or pasted text) or a receipt / scale ticket. Nothing changes
+ * until the estimator checks the rows and hits Apply, and every price that
+ * lands says where it came from.
+ */
+function PriceImport({
+  kind: initialKind,
+  suppliers,
+  onApplied,
+}: {
+  kind: ImportKind;
+  suppliers: SupplierOption[];
+  onApplied: (msg: string) => void;
+}) {
+  const [kind, setKind] = useState<ImportKind>(initialKind);
   const [busy, setBusy] = useState<"" | "reading" | "applying">("");
   const [err, setErr] = useState("");
   const [supplierId, setSupplierId] = useState("");
-  const [newSupplier, setNewSupplier] = useState({ name: "", address: "" });
-  const [rows, setRows] = useState<(ScanProposal & { use: boolean; name: string; unit: string; price: string })[]>([]);
+  const [newSupplier, setNewSupplier] = useState({ name: "", address: "", phone: "" });
+  const [date, setDate] = useState(today());
+  const [pasted, setPasted] = useState("");
+  const [rows, setRows] = useState<ImportRow[]>([]);
   const [notes, setNotes] = useState("");
+  const [delivery, setDelivery] = useState<{ text: string; flatFee: number | null; minimum: string } | null>(null);
+  const [saveFee, setSaveFee] = useState(false);
+  const [fee, setFee] = useState("");
+  /** The last result read, so switching supplier re-matches without reading again. */
+  const [lastScan, setLastScan] = useState<unknown>(null);
+  const sheet = kind === "sheet";
 
-  async function read(files: FileList | null) {
-    if (!files?.length) return;
+  const setRow = (i: number, patch: Partial<ImportRow>) => setRows((all) => all.map((x, j) => (j === i ? { ...x, ...patch } : x)));
+
+  async function read(files: FileList | null, text?: string) {
+    const list = [...(files ?? [])];
+    if (!list.length && !text?.trim()) return;
     setBusy("reading");
     setErr("");
     try {
-      const images = await Promise.all([...files].slice(0, 4).map((f) => toJpeg(f)));
+      const pdfFile = list.find((f) => f.type === "application/pdf" || /\.pdf$/i.test(f.name));
+      if (pdfFile && pdfFile.size > 3_900_000) throw new Error("That PDF is over 4 MB. Try photos of the pages, or paste the text.");
+      const images = await Promise.all(list.filter((f) => f !== pdfFile && f.type.startsWith("image/")).slice(0, 6).map((f) => toJpeg(f)));
+      const pdf = pdfFile ? { data: await toBase64(pdfFile) } : undefined;
       const res = await fetch("/api/catalog/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ images, supplierId: supplierId || undefined }),
+        body: JSON.stringify({ kind, images, pdf, text: text?.trim() || undefined, supplierId: supplierId || undefined }),
       });
       const j = await res.json();
-      if (!res.ok) throw new Error(j.error ?? "Couldn't read that photo");
+      if (!res.ok) throw new Error(j.error ?? "Couldn't read that");
+      setLastScan(j.scan);
       setSupplierId(j.supplierId ?? "");
-      if (!j.supplierId) setNewSupplier({ name: j.scan.supplier.name, address: j.scan.supplier.address });
-      setNotes(j.scan.notes);
-      setRows(
-        (j.proposals as ScanProposal[]).map((p) => ({
-          ...p,
-          use: p.action !== "skip",
-          name: p.match?.name ?? p.line.description,
-          unit: p.match?.unit ?? p.line.unit ?? "each",
-          price: p.line.unitPrice === null ? "" : String(p.line.unitPrice),
-        }))
-      );
+      if (!j.supplierId) {
+        setNewSupplier({ name: j.scan.supplier.name ?? "", address: j.scan.supplier.address ?? "", phone: j.scan.supplier.phone ?? "" });
+      }
+      if (/^\d{4}-\d{2}-\d{2}$/.test(j.scan.date ?? "")) setDate(j.scan.date);
+      setNotes(j.scan.notes ?? "");
+      const d = j.scan.delivery && (j.scan.delivery.text || j.scan.delivery.flatFee !== null) ? j.scan.delivery : null;
+      setDelivery(d);
+      setFee(d?.flatFee != null ? String(d.flatFee) : "");
+      setSaveFee(false);
+      showProposals(j.proposals as ScanProposal[]);
+      if ((j.proposals as ScanProposal[]).length === 0) setErr("No prices found in that. Try a sharper photo, or paste the text.");
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Couldn't read that photo");
+      setErr(e instanceof Error ? e.message : "Couldn't read that");
     } finally {
       setBusy("");
     }
   }
 
+  function showProposals(ps: ScanProposal[]) {
+    setRows(
+      ps.map((p) => ({
+        ...p,
+        use: p.action !== "skip",
+        name: p.match?.name ?? p.line.description,
+        unit: p.match?.unit ?? p.line.unit ?? "each",
+        price: p.line.unitPrice === null ? "" : String(p.line.unitPrice),
+        group: p.specClass ?? "",
+      }))
+    );
+  }
+
+  /** The supplier changed after reading: match the same lines against that supplier's items. */
+  async function pickSupplier(id: string) {
+    setSupplierId(id);
+    if (!lastScan || rows.length === 0) return;
+    setBusy("reading");
+    setErr("");
+    try {
+      const res = await fetch("/api/catalog/scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind, scan: lastScan, supplierId: id || undefined }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error ?? "Couldn't match those prices");
+      showProposals(j.proposals as ScanProposal[]);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Couldn't match those prices");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  const chosen = rows.filter((r) => r.use && r.action !== "skip" && parseFloat(r.price) > 0);
+  const supplierName = suppliers.find((s) => s.id === supplierId)?.name ?? newSupplier.name.trim();
+
   async function apply() {
-    const items = rows
-      .filter((r) => r.use && r.action !== "skip" && parseFloat(r.price) > 0)
-      .map((r) =>
-        r.action === "update" && r.match
-          ? { action: "update" as const, materialId: r.match.materialId, unitCost: parseFloat(r.price) }
-          : { action: "new" as const, name: r.name.trim(), unit: r.unit, unitCost: parseFloat(r.price) }
-      );
+    const items = chosen.map((r) => {
+      const specClass = r.group.trim();
+      return r.action === "update" && r.match
+        ? { action: "update" as const, materialId: r.match.materialId, unitCost: parseFloat(r.price), specClass }
+        : { action: "new" as const, name: r.name.trim(), unit: r.unit, unitCost: parseFloat(r.price), specClass };
+    });
     if (!items.length) return;
+    if (!supplierId && !newSupplier.name.trim()) {
+      setErr("Pick the supplier (or type its name) so these prices are tied to it.");
+      return;
+    }
     setBusy("applying");
     setErr("");
     try {
+      const feeNum = parseFloat(fee);
       const res = await fetch("/api/catalog/scan/apply", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          kind,
+          date: /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : "",
           supplierId: supplierId || null,
           newSupplier: !supplierId && newSupplier.name.trim() ? newSupplier : null,
+          deliveryFee: sheet && saveFee && Number.isFinite(feeNum) && feeNum >= 0 ? feeNum : null,
+          deliveryText: sheet && saveFee && delivery?.text ? delivery.text : undefined,
           items,
         }),
       });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error ?? "Couldn't apply");
-      onApplied();
+      const bits = [j.updated ? `${j.updated} price${j.updated === 1 ? "" : "s"} updated` : "", j.created ? `${j.created} added` : ""].filter(Boolean);
+      onApplied(`${supplierName || "Supplier"}: ${bits.join(", ") || "nothing changed"}.`);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Couldn't apply");
     } finally {
@@ -920,27 +1072,88 @@ function ScanReceipt({ suppliers, onApplied }: { suppliers: SupplierOption[]; on
   }
 
   const field: React.CSSProperties = { border: `1px solid ${C.line}`, borderRadius: 4, padding: "7px 9px", fontSize: 13, background: C.white };
+  const tab = (on: boolean): React.CSSProperties => ({
+    border: `1px solid ${on ? C.green : C.line}`,
+    background: on ? C.green : C.white,
+    color: on ? C.white : C.black,
+    borderRadius: 4,
+    padding: "6px 12px",
+    fontSize: 13,
+    fontWeight: 600,
+    cursor: "pointer",
+  });
+  const starterReplaced = chosen.filter((r) => r.match?.priceSource === "starter").length;
 
   return (
     <div style={{ background: C.white, border: `1px solid ${C.amber}`, borderRadius: 6, padding: 16, marginBottom: 14 }}>
-      <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>📷 Update prices from a receipt or scale ticket</div>
-      <p style={{ fontSize: 13, color: C.grey, margin: "0 0 12px" }}>
-        Take a photo (or pick one). Nothing changes until you check the rows and hit Apply.
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
+        <span style={{ fontSize: 15, fontWeight: 700, marginRight: 6 }}>Prices from your supplier</span>
+        <button type="button" onClick={() => { setKind("sheet"); setRows([]); setLastScan(null); }} style={tab(sheet)} aria-pressed={sheet}>
+          📄 Price sheet
+        </button>
+        <button type="button" onClick={() => { setKind("receipt"); setRows([]); setLastScan(null); }} style={tab(!sheet)} aria-pressed={!sheet}>
+          🧾 Receipt / ticket
+        </button>
+      </div>
+      <p style={{ fontSize: 13, color: C.grey, margin: "0 0 12px", maxWidth: "70ch" }}>
+        {sheet
+          ? "A quarry or yard's price list: photos, a PDF, or paste the text from their email or website. Their prices replace starter prices and get tied to that supplier. Nothing changes until you check the rows and hit Apply."
+          : "A receipt, invoice or scale ticket. Take a photo (or pick one). Nothing changes until you check the rows and hit Apply."}
       </p>
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
-        <select aria-label="Supplier" value={supplierId} onChange={(e) => setSupplierId(e.target.value)} style={field}>
-          <option value="">Supplier: figure it out from the receipt</option>
+
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
+        <select aria-label="Supplier" value={supplierId} onChange={(e) => pickSupplier(e.target.value)} disabled={busy !== ""} style={field}>
+          <option value="">{rows.length ? "A new supplier (not in your list)" : `Supplier: figure it out from the ${sheet ? "sheet" : "receipt"}`}</option>
           {suppliers.map((s) => (
             <option key={s.id} value={s.id}>
               {s.name}
             </option>
           ))}
         </select>
-        <label style={{ background: C.green, color: C.white, borderRadius: 4, padding: "8px 14px", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
-          {busy === "reading" ? "Reading…" : "Choose photo"}
-          <input type="file" accept="image/*" capture="environment" multiple hidden onChange={(e) => read(e.target.files)} disabled={busy !== ""} />
+        <label style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
+          {sheet ? "Prices dated" : "Date"}
+          <input aria-label="Price date" type="date" value={date} onChange={(e) => setDate(e.target.value)} style={field} />
+        </label>
+        <label style={{ background: C.green, color: C.white, borderRadius: 4, padding: "8px 14px", fontSize: 14, fontWeight: 600, cursor: busy ? "wait" : "pointer" }}>
+          {busy === "reading" ? "Reading…" : sheet ? "Choose photos or PDF" : "Choose photo"}
+          <input
+            type="file"
+            accept={sheet ? "image/*,application/pdf,.pdf" : "image/*"}
+            {...(sheet ? {} : { capture: "environment" as const })}
+            multiple
+            hidden
+            onChange={(e) => {
+              read(e.target.files);
+              e.target.value = "";
+            }}
+            disabled={busy !== ""}
+          />
         </label>
       </div>
+
+      {sheet && (
+        <div style={{ marginBottom: 12 }}>
+          <textarea
+            aria-label="Paste the price list"
+            value={pasted}
+            onChange={(e) => setPasted(e.target.value)}
+            placeholder="…or paste the price list here (from their email, website or a spreadsheet)"
+            rows={pasted ? 6 : 2}
+            style={{ ...field, width: "100%", boxSizing: "border-box", fontFamily: "inherit", resize: "vertical" }}
+          />
+          {pasted.trim() && (
+            <button
+              type="button"
+              onClick={() => read(null, pasted)}
+              disabled={busy !== ""}
+              style={{ marginTop: 6, background: C.green, color: C.white, border: "none", borderRadius: 4, padding: "7px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+            >
+              {busy === "reading" ? "Reading…" : "Read pasted list"}
+            </button>
+          )}
+        </div>
+      )}
+
       {err && <div style={{ color: C.red, fontSize: 13, marginBottom: 8 }}>{err}</div>}
 
       {rows.length > 0 && (
@@ -950,58 +1163,83 @@ function ScanReceipt({ suppliers, onApplied }: { suppliers: SupplierOption[]; on
               <span style={{ alignSelf: "center" }}>New supplier:</span>
               <input aria-label="New supplier name" value={newSupplier.name} onChange={(e) => setNewSupplier({ ...newSupplier, name: e.target.value })} placeholder="Name" style={field} />
               <input aria-label="New supplier address" value={newSupplier.address} onChange={(e) => setNewSupplier({ ...newSupplier, address: e.target.value })} placeholder="Address (for distances)" style={{ ...field, flex: 1, minWidth: 200 }} />
+              <input aria-label="New supplier phone" value={newSupplier.phone} onChange={(e) => setNewSupplier({ ...newSupplier, phone: e.target.value })} placeholder="Phone" style={{ ...field, width: 130 }} />
             </div>
           )}
+
           <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 700 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 820 }}>
               <thead>
                 <tr style={{ background: C.lgn, textAlign: "left" }}>
                   <Th style={{ width: 40 }} />
-                  <Th>On the receipt</Th>
+                  <Th>{sheet ? "On the sheet" : "On the receipt"}</Th>
                   <Th>Goes to</Th>
+                  <Th style={{ width: 190 }}>Substitute group</Th>
                   <Th style={{ width: 110 }}>Price / unit</Th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((r, i) => (
-                  <tr key={i} style={{ borderTop: `1px solid ${C.line}`, opacity: r.use ? 1 : 0.5 }}>
+                  <tr key={i} style={{ borderTop: `1px solid ${C.line}`, opacity: r.use ? 1 : 0.5, verticalAlign: "top" }}>
                     <Td>
                       <input
                         type="checkbox"
                         aria-label="Apply this row"
                         checked={r.use}
                         disabled={r.action === "skip"}
-                        onChange={(e) => setRows((all) => all.map((x, j) => (j === i ? { ...x, use: e.target.checked } : x)))}
+                        onChange={(e) => setRow(i, { use: e.target.checked })}
                       />
                     </Td>
                     <Td>
                       <div>{r.line.description}</div>
                       <div style={{ color: C.grey }}>
-                        {r.line.qty ?? "?"} {r.line.unit ?? ""}
+                        {r.line.qty !== null && r.line.qty !== undefined ? `${r.line.qty} ` : ""}
+                        {r.line.unit ?? ""}
+                        {r.line.notes ? ` · ${r.line.notes}` : ""}
                       </div>
                     </Td>
                     <Td>
                       {r.action === "update" && r.match ? (
                         <div>
                           <b>{r.match.name}</b>
-                          <div style={{ color: C.grey }}>
+                          <div style={{ color: C.grey, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 2 }}>
                             now ${r.match.currentUnitCost.toFixed(2)} / {r.match.unit}
+                            <PriceTag source={r.match.priceSource} small />
                           </div>
+                          {r.match.priceSource === "starter" && (
+                            <div style={{ color: C.green, marginTop: 2 }}>Replaces the starter price</div>
+                          )}
+                          {r.match.willLink && supplierName && (
+                            <div style={{ color: C.green, marginTop: 2 }}>Will be tied to {supplierName}</div>
+                          )}
                         </div>
                       ) : r.action === "new" ? (
-                        <div style={{ display: "flex", gap: 6 }}>
-                          <input aria-label="New material name" value={r.name} onChange={(e) => setRows((all) => all.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))} style={{ ...field, flex: 1 }} />
-                          <select aria-label="Unit" value={r.unit} onChange={(e) => setRows((all) => all.map((x, j) => (j === i ? { ...x, unit: e.target.value } : x)))} style={field}>
-                            {UNITS.map((u) => (
-                              <option key={u} value={u}>{u}</option>
-                            ))}
-                          </select>
+                        <div>
+                          <div style={{ display: "flex", gap: 6 }}>
+                            <input aria-label="New material name" value={r.name} onChange={(e) => setRow(i, { name: e.target.value })} style={{ ...field, flex: 1 }} />
+                            <select aria-label="Unit" value={r.unit} onChange={(e) => setRow(i, { unit: e.target.value })} style={field}>
+                              {UNITS.map((u) => (
+                                <option key={u} value={u}>{u}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div style={{ color: C.grey, marginTop: 2 }}>New material{supplierName ? ` from ${supplierName}` : ""}</div>
                         </div>
                       ) : (
                         <span style={{ color: C.grey }}>skipped</span>
                       )}
                       {r.flag && <div style={{ color: "#8a5a00", marginTop: 2 }}>{r.flag}</div>}
-                      {r.action === "new" && <div style={{ color: C.grey, marginTop: 2 }}>New material</div>}
+                    </Td>
+                    <Td>
+                      <input
+                        aria-label="Substitute group"
+                        list="le-groups"
+                        value={r.group}
+                        onChange={(e) => setRow(i, { group: e.target.value })}
+                        placeholder="none"
+                        title="Materials in the same group are compared delivered to each job"
+                        style={{ ...field, width: "100%", boxSizing: "border-box" }}
+                      />
                     </Td>
                     <Td>
                       <input
@@ -1009,7 +1247,7 @@ function ScanReceipt({ suppliers, onApplied }: { suppliers: SupplierOption[]; on
                         type="number"
                         step="0.01"
                         value={r.price}
-                        onChange={(e) => setRows((all) => all.map((x, j) => (j === i ? { ...x, price: e.target.value } : x)))}
+                        onChange={(e) => setRow(i, { price: e.target.value })}
                         style={{ ...field, width: 100, textAlign: "right" }}
                       />
                     </Td>
@@ -1018,15 +1256,48 @@ function ScanReceipt({ suppliers, onApplied }: { suppliers: SupplierOption[]; on
               </tbody>
             </table>
           </div>
+
+          {sheet && delivery && (
+            <div style={{ marginTop: 12, background: C.bg, borderRadius: 6, padding: "10px 12px", fontSize: 13 }}>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>Delivery on this sheet</div>
+              {delivery.text && <div style={{ color: C.grey, marginBottom: 6 }}>{delivery.text}</div>}
+              {delivery.minimum && <div style={{ color: C.grey, marginBottom: 6 }}>Minimum: {delivery.minimum}</div>}
+              <label style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <input type="checkbox" checked={saveFee} onChange={(e) => setSaveFee(e.target.checked)} />
+                Save as {supplierName || "this supplier"}&apos;s delivery fee: $
+                <input
+                  aria-label="Delivery fee"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={fee}
+                  onChange={(e) => {
+                    setFee(e.target.value);
+                    setSaveFee(true);
+                  }}
+                  style={{ ...field, width: 90 }}
+                />
+                <span style={{ color: C.grey }}>(used when a material is set to “Supplier delivers”)</span>
+              </label>
+            </div>
+          )}
+
           {notes && <div style={{ fontSize: 12, color: C.grey, marginTop: 8 }}>Note from the reader: {notes}</div>}
-          <button
-            type="button"
-            onClick={apply}
-            disabled={busy !== ""}
-            style={{ marginTop: 12, background: C.green, color: C.white, border: "none", borderRadius: 4, padding: "9px 18px", fontSize: 14, fontWeight: 600, cursor: "pointer" }}
-          >
-            {busy === "applying" ? "Applying…" : `Apply ${rows.filter((r) => r.use && r.action !== "skip").length} change(s)`}
-          </button>
+          <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginTop: 12 }}>
+            <button
+              type="button"
+              onClick={apply}
+              disabled={busy !== "" || chosen.length === 0}
+              style={{ background: C.green, color: C.white, border: "none", borderRadius: 4, padding: "9px 18px", fontSize: 14, fontWeight: 600, cursor: "pointer", opacity: chosen.length ? 1 : 0.5 }}
+            >
+              {busy === "applying" ? "Applying…" : `Apply ${chosen.length} price${chosen.length === 1 ? "" : "s"}`}
+            </button>
+            {starterReplaced > 0 && (
+              <span style={{ fontSize: 13, color: C.green }}>
+                {starterReplaced} starter price{starterReplaced === 1 ? "" : "s"} replaced with {supplierName || "the supplier"}&apos;s
+              </span>
+            )}
+          </div>
         </>
       )}
     </div>
