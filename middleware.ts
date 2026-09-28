@@ -13,11 +13,17 @@ const isPublic = createRouteMatcher([
   "/api/health",
 ]);
 
-export default clerkMiddleware(async (auth, req) => {
-  if (!isPublic(req)) {
-    await auth.protect();
-  }
-});
+export default clerkMiddleware(
+  async (auth, req) => {
+    if (!isPublic(req)) {
+      await auth.protect();
+    }
+  },
+  // A signed-out visitor goes to the app's own /sign-in page. Left to the
+  // default, Clerk sends them to its hosted Account Portal, whose production
+  // domain (accounts.landscape-estimate.vercel.app) doesn't exist.
+  { signInUrl: "/sign-in", signUpUrl: "/sign-up" }
+);
 
 export const config = {
   matcher: [
