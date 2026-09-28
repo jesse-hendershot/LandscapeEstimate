@@ -1,0 +1,23 @@
+name: Checks
+
+# Tests, types and lint on every push and pull request. No secrets needed:
+# the tests cover the pure arithmetic (money, earthwork, haul, substitutes,
+# parsers) and never touch the database or the network.
+
+on:
+  push:
+    branches: [main]
+  pull_request: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run lint

@@ -35,12 +35,21 @@ export default function SiteHeader() {
       </Link>
 
       <Show when="signed-in">
-        <nav style={{ display: "flex", gap: 16, fontSize: 14 }}>
+        <nav style={{ display: "flex", gap: 16, fontSize: 15, flexWrap: "wrap" }}>
           <Link href="/" style={{ color: C.black, textDecoration: "none" }}>
             New estimate
           </Link>
           <Link href="/catalog" style={{ color: C.black, textDecoration: "none" }}>
             Materials
+          </Link>
+          <Link href="/suppliers" style={{ color: C.black, textDecoration: "none" }}>
+            Suppliers
+          </Link>
+          <Link href="/field-test" style={{ color: C.black, textDecoration: "none" }}>
+            Field test
+          </Link>
+          <Link href="/settings" style={{ color: C.black, textDecoration: "none" }}>
+            Settings
           </Link>
         </nav>
 

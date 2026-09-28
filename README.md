@@ -22,23 +22,53 @@ This collapses that into a single text box.
 
 ## How it works
 
-The shop keeps a **catalog** — the twenty-odd things it buys every week, at its real prices. The model never sees a catalog price and never supplies one. It reads the job, picks materials, and returns a catalog id and a quantity; the server applies the price.
+The shop keeps a **catalog** — the things it buys every week, at its real prices, linked to the supplier it buys them from. The model never sees a catalog price and never supplies one. It reads the job, picks materials, and returns a catalog id and a quantity (or, better, the dimensions); the server applies the price and does the math.
 
-That has two consequences worth stating plainly:
+That has three consequences worth stating plainly:
 
 - **A catalog line cannot have a wrong price.** A wrong price is wrong in exactly one place, where one person fixes it once for every future job.
-- **The model does no arithmetic.** Delivery, tax, subtotal and grand total are all computed in TypeScript. Money is integer cents everywhere; no float touches a number a contractor reads.
+- **The model does no arithmetic.** Quantities from dimensions (with compaction and tons-per-yard), hauling, deposits, tax and the grand total are all computed in TypeScript. Money is integer cents everywhere; no float touches a number a contractor reads.
+- **Materials are priced delivered, not on the shelf.** A quarry 30 miles out that's $6/ton cheaper usually costs more once the diesel and truck time are counted. The locality engine prices every interchangeable material, from every supplier, *delivered to this job address*, and keeps the cheapest.
 
 Anything off-catalog — a specific plant, an odd block — gets researched with web search, and those lines are flagged with their source so you can see which numbers are solid and which are estimates.
 
+### Locality
+
+Everything is measured from the job site:
+
+- Each bulk load is a round trip job → supplier → job. Loads are split across the trucks on the job (biggest first), by weight **and** by bed volume — light material fills the bed before it hits the scale limit.
+- Store runs (bags, rolls, pipe) are one round trip per store, however many items.
+- Each truck that goes out adds one shop → job → shop trip at the end. More trucks finish sooner; each one adds its own shop trip.
+- Every trip costs fuel (miles ÷ mpg × this week's diesel) plus time (hours × the truck's hourly cost, which covers driver and wear but not fuel).
+
+Diesel is the EIA's weekly Midwest retail price, refreshed automatically. Road miles come from OpenRouteService's truck profile when a key is set, otherwise straight-line × 1.3 (flagged "approx" everywhere it shows).
+
+Materials that do the same job share a **substitute group** in the catalog ("Drain rock" might hold 3/4 in clean limestone from one quarry and #57 from another). The shop decides what's interchangeable; the app never guesses. Each estimate line shows the alternatives, priced delivered, with a one-click swap.
+
+### The site
+
+Type an address and the app pulls the lot from the county's parcel records (Johnson County today), the ground elevation from USGS lidar, and a 2025 aerial photo. The model gets the photo, where the lot lines fall on it, and the scale, so "drainage project" comes back with a sensible drain run along the right side of the lot. Tap **Measure on the map** to outline beds or draw a drain run for exact numbers — a drawn line reports how much the ground falls along it.
+
+### Finding suppliers
+
+Every active quarry and sand & gravel pit registered with the federal Mine Safety and Health Administration is searchable by distance from the shop or a job, and can be added as a supplier in one click. Photos of receipts and scale tickets update catalog prices: the model reads the paper, a person ticks which changes to apply.
+
+### Field test
+
+Every estimate is saved. The field-test page puts the app's total next to the hand estimate, the time each took, and the actual job cost — and every edit made to a generated estimate is logged as a correction, which is the label set for improving it.
+
 ## Features
 
-- **Plain-English job entry.** No forms, no dropdowns, no picking from a list.
-- **Per-account catalog.** Your prices, used exactly as written.
-- **Clarifying questions.** If the job is underspecified the model says so instead of guessing — a retaining wall with no stated height comes back with questions, not an invented block count.
-- **Markup calculator.** Slide from 10% to 150% and see materials cost, your margin, and the customer-facing number.
-- **PDF export.** Customer-ready quote.
-- **Verification gates.** Every generated estimate runs a deterministic gate stack before it reaches you — unit mismatches, duplicate materials, bad sources, out-of-band prices. Failures are shown, never hidden, and never block the estimate.
+- **Plain-English job entry.** Two words is enough; the site data fills in the rest.
+- **Property map.** County lot lines, aerial photo, draw areas and lines, ground fall along a drain.
+- **Delivered-cost pricing.** Substitutes compared by material + haul to this address.
+- **Hauling that follows your trucks.** Loads, store runs, shop trips, weekly diesel. Change the number of trucks and it re-plans.
+- **Pallet deposits and tax scope.** Refundable deposits on their own line; tax on materials, hauling, and (optionally) deposits.
+- **Quarry finder.** Federal mine records, sorted by distance.
+- **Receipt scanning.** Photo in, price updates proposed, you approve.
+- **Follow-up questions.** Tap-to-answer; the whole estimate re-runs with your answers.
+- **Autosave, PDF, field-test log.**
+- **Verification gates.** Deterministic checks on every generated estimate. Failures are shown, never hidden, and never block the estimate.
 
 ## Stack
 
@@ -46,7 +76,9 @@ Anything off-catalog — a specific plant, an odd block — gets researched with
 |---|---|
 | Framework | Next.js (App Router) |
 | Language | TypeScript |
-| Research | Anthropic API with web search |
+| Research | Anthropic API with web search and vision |
+| Maps | Leaflet; Johnson County GIS; USGS National Map imagery and 3DEP elevation |
+| Public data | US Census geocoder, OpenStreetMap Nominatim, EIA diesel prices, MSHA mine records |
 | Database | Neon (serverless Postgres) + Drizzle ORM |
 | Auth | Clerk |
 | PDF | jsPDF + jspdf-autotable |
@@ -91,7 +123,7 @@ Fill in the four required values:
 ### 4. Create the schema
 
 ```bash
-npx drizzle-kit push
+npm run db:migrate
 ```
 
 ### 5. Run
@@ -100,31 +132,36 @@ npx drizzle-kit push
 npm run dev
 ```
 
-Open `http://localhost:3000`, create an account, and generate an estimate. A starter catalog of 25 common materials seeds automatically on your first run — edit it under **Materials** to match what you actually pay.
+Open `http://localhost:3000`, create an account, and generate an estimate. A starter catalog of 25 common materials and two placeholder trucks seed automatically on your first run. Then:
 
-## Optional tuning
+1. **Settings** — shop address, your real trucks (capacity, mpg, cost per hour).
+2. **Suppliers** — add where you buy, or find quarries near you.
+3. **Materials** — link each material to its supplier, set substitute groups, correct prices (or scan a receipt).
 
-These control cost and are all optional:
+## Optional keys and tuning
 
 | Variable | Effect |
 |---|---|
+| `OPENROUTESERVICE_API_KEY` | Real truck-route road miles (free key at openrouteservice.org). Without it, miles are straight-line × 1.3 and marked approximate. |
+| `EIA_API_KEY` | Diesel price from the EIA API (free key at eia.gov/opendata). Without it, the same number is read from EIA's public history page. |
 | `ESTIMATE_MODEL` | Model for the main call. Defaults to the top tier. |
 | `ESTIMATE_REPAIR_MODEL` | Model for the repair pass. Defaults to `ESTIMATE_MODEL`. |
-| `ESTIMATE_SEARCH_FIRST` | Set to `false` to skip web search on the first pass. Catalog-only jobs need no research; the repair pass still enables search when the sources gate fails. |
+| `ESTIMATE_SEARCH_FIRST` | Set to `false` to skip web search on the first pass. |
+| `SCAN_MODEL` | Model for reading receipts. Defaults to `ESTIMATE_MODEL`. |
 
 Every estimate run is logged to `estimate_runs` with gates tripped, catalog vs researched line counts, latency and token usage — so cost and quality are measurable rather than guessed at.
 
 ## Tests
 
 ```bash
-npx tsx --test lib/estimate/gates.test.ts
+npm test
 ```
 
-26 tests covering the gate stack against fixtures.
+118 tests: money and gates, earthwork conversions, the haul planner and substitute ranking (including the worked example from the first field feedback), public-data parsers against captured live responses, receipt matching, the correction diff, and the screen's live totals against the server's cents. No network or database needed. The same suite runs in GitHub Actions on every push.
 
 ## Status
 
-Running locally. Field trial with a working contractor planned for Fall 2026.
+Live at [landscape-estimate.vercel.app](https://landscape-estimate.vercel.app/). Field trial with a working contractor under way, fall 2026.
 
 ## About
 

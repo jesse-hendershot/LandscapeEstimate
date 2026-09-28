@@ -74,6 +74,44 @@ export interface LineItem {
   low: number;
   high: number;
   source: string;
+
+  // Everything below is optional so older saved estimates still render.
+  /** material | haul | deposit | tax | total */
+  kind?: "material" | "haul" | "deposit" | "tax" | "total";
+  materialId?: string | null;
+  fromCatalog?: boolean;
+  /** How the quantity was worked out. */
+  basis?: string;
+  /** This line's share of hauling, dollars. */
+  haul?: number;
+  /** One-way road miles from the job to the supplier. */
+  miles?: number | null;
+  milesApprox?: boolean;
+  /** Same-class substitutes, priced delivered to this job. */
+  alternatives?: LineAlternative[];
+  /** Dollars saved by the substitute that replaced the model's pick. */
+  saved?: number;
+  /** Name of the material this line replaced, if a substitute won. */
+  replaced?: string;
+}
+
+/** A substitute the estimator can swap in, priced delivered to this job. */
+export interface LineAlternative {
+  materialId: string;
+  material: string;
+  supplier: string;
+  qty: number;
+  unit: string;
+  unitCost: number;
+  /** Material cost for this line, dollars. */
+  materialCost: number;
+  /** Haul for this line from this supplier, dollars (shop trip excluded). */
+  haul: number;
+  /** materialCost + haul */
+  landed: number;
+  miles: number | null;
+  milesApprox: boolean;
+  source: string;
 }
 
 export interface Estimate {
@@ -132,11 +170,16 @@ export function pass(gate: string, detail = ""): GateResult {
 // Kept identical to the predicates in app/page.tsx so the server and the client
 // never disagree about which rows are bottom-line rows rather than materials.
 
-export const isDelivery = (i: LineItem) => /delivery/i.test(i.material);
-export const isTax = (i: LineItem) => /sales.?tax|iowa.*tax/i.test(i.material);
-export const isGrandTotal = (i: LineItem) => /grand.?total/i.test(i.material);
+export const isDelivery = (i: LineItem) =>
+  i.kind ? i.kind === "haul" : /delivery|hauling/i.test(i.material);
+export const isDeposit = (i: LineItem) =>
+  i.kind ? i.kind === "deposit" : /pallet deposit/i.test(i.material);
+export const isTax = (i: LineItem) =>
+  i.kind ? i.kind === "tax" : /sales.?tax|iowa.*tax/i.test(i.material);
+export const isGrandTotal = (i: LineItem) =>
+  i.kind ? i.kind === "total" : /grand.?total/i.test(i.material);
 export const isSpecial = (i: LineItem) =>
-  isDelivery(i) || isTax(i) || isGrandTotal(i);
+  isDelivery(i) || isDeposit(i) || isTax(i) || isGrandTotal(i);
 
 /** Just the material rows — everything the subtotal is computed from. */
 export const materialRows = (items: LineItem[]) => items.filter((i) => !isSpecial(i));

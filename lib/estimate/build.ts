@@ -2,7 +2,7 @@
  * Estimate assembly.
  *
  * This is where the model's output stops being trusted and starts being
- * arithmetic. Three rules govern everything here:
+ * arithmetic. Four rules govern everything here:
  *
  * 1. **A catalog line is priced from the catalog, full stop.** The model
  *    returns a catalog id and a quantity. It never sees the price and never
@@ -10,17 +10,22 @@
  *    is wrong in the catalog — where exactly one person can fix it, once, for
  *    every future job.
  *
- * 2. **Delivery, tax and the grand total are computed, never requested.** The
- *    old flow asked the model for them and then checked its arithmetic. Not
- *    asking is strictly better than checking.
+ * 2. **Hauling, deposits, tax and the grand total are computed, never
+ *    requested.** Hauling comes from the locality engine (lib/haul) when the
+ *    shop has trucks set up; the model's delivery guess is only a fallback.
  *
- * 3. **Integers throughout.** Cents and thousandths. No float touches a number
+ * 3. **When the model gives dimensions, code does the multiplying.** A line
+ *    can carry `dims` (area, depth, compacted?) instead of trusting the model's
+ *    own qty. See lib/earthwork.
+ *
+ * 4. **Integers throughout.** Cents and thousandths. No float touches a number
  *    a contractor reads.
  */
 
 import type { Material } from "../db/schema";
+import { qtyFromDims, type Dims } from "../earthwork/quantity";
 import { applyBps, extendCents, fromCents, fromMilli, toCents, toMilli } from "../money";
-import { parseUnit, type LineItem } from "./schema";
+import { parseUnit, type LineItem, type LineAlternative } from "./schema";
 
 // ── what the model is allowed to return ────────────────────────────────────
 
@@ -29,6 +34,8 @@ export interface ModelCatalogLine {
   qty: number;
   /** Why this quantity — shown to the estimator, never used in arithmetic. */
   basis?: string;
+  /** When given, the quantity is computed from these instead of `qty`. */
+  dims?: Dims;
 }
 
 export interface ModelCustomLine {
@@ -39,6 +46,7 @@ export interface ModelCustomLine {
   high: number;
   source: string;
   basis?: string;
+  dims?: Dims;
 }
 
 export interface ModelOutput {
@@ -61,14 +69,42 @@ export interface BuiltLine {
   fromCatalog: boolean;
   materialId: string | null;
   basis: string;
+  /** Filled in by the locality engine. */
+  haulCents?: number;
+  miles?: number | null;
+  milesApprox?: boolean;
+  supplierId?: string | null;
+  alternatives?: LineAlternative[];
+  /** Set when a substitute replaced the model's pick; what it saved, delivered. */
+  savedCents?: number;
+  replaced?: string;
+}
+
+export interface DepositLine {
+  material: string;
+  pallets: number;
+  cents: number;
+}
+
+export interface QtyMismatch {
+  material: string;
+  modelQtyMilli: number;
+  computedQtyMilli: number;
+  unit: string;
 }
 
 export interface BuiltEstimate {
   lines: BuiltLine[];
   subtotalLowCents: number;
   subtotalHighCents: number;
+  /** Hauling/delivery. Named "delivery" for the database column's sake. */
   deliveryLowCents: number;
   deliveryHighCents: number;
+  /** "computed" = locality engine; "model" = the model's guess; "none". */
+  haulSource: "computed" | "model" | "none";
+  haulLabel: string;
+  depositCents: number;
+  deposits: DepositLine[];
   taxLowCents: number;
   taxHighCents: number;
   totalLowCents: number;
@@ -77,14 +113,19 @@ export interface BuiltEstimate {
   notes: string;
   /** Model-supplied ids that matched nothing in this account's catalog. */
   droppedCatalogIds: string[];
+  qtyMismatches: QtyMismatch[];
   catalogLineCount: number;
   customLineCount: number;
 }
 
 export interface BuildOptions {
   taxRateBps: number;
-  /** Applied to material rows only; delivery and tax are never marked up. */
+  /** Applied to material rows only; hauling, deposits and tax are never marked up. */
   markupBps?: number;
+  /** Tax hauling too. Defaults to false here; the profile decides in the app. */
+  taxHaul?: boolean;
+  /** Tax refundable deposits too. */
+  taxDeposits?: boolean;
 }
 
 /**
@@ -101,9 +142,31 @@ export function buildEstimate(
   const byId = new Map(catalog.map((m) => [m.id, m]));
   const lines: BuiltLine[] = [];
   const dropped: string[] = [];
+  const mismatches: QtyMismatch[] = [];
 
   const markup = opts.markupBps ?? 0;
   const withMarkup = (cents: number) => (markup ? cents + applyBps(cents, markup) : cents);
+
+  const resolveQty = (
+    name: string,
+    unit: string,
+    rawQty: unknown,
+    basis: string,
+    dims: Dims | undefined,
+    shape: { category?: string; tonsPerCuYdMilli?: number | null }
+  ): { qtyMilli: number; basis: string } => {
+    let qtyMilli = toMilli(rawQty as number);
+    let why = basis;
+    const computed = qtyFromDims(dims, { name, unit, ...shape });
+    if (computed && computed.qtyMilli > 0) {
+      if (qtyMilli > 0 && Math.abs(computed.qtyMilli - qtyMilli) / computed.qtyMilli > 0.25) {
+        mismatches.push({ material: name, modelQtyMilli: qtyMilli, computedQtyMilli: computed.qtyMilli, unit });
+      }
+      qtyMilli = computed.qtyMilli;
+      why = computed.basis + (basis ? ` — ${basis}` : "");
+    }
+    return { qtyMilli, basis: why };
+  };
 
   for (const raw of output.catalog_lines ?? []) {
     const m = byId.get(raw?.catalogId);
@@ -111,7 +174,10 @@ export function buildEstimate(
       if (raw?.catalogId) dropped.push(raw.catalogId);
       continue;
     }
-    const qtyMilli = toMilli(raw.qty);
+    const { qtyMilli, basis } = resolveQty(m.name, m.unit, raw.qty, raw.basis ?? "", raw.dims, {
+      category: m.category,
+      tonsPerCuYdMilli: m.tonsPerCuYdMilli,
+    });
     if (qtyMilli <= 0) continue;
 
     // Catalog price, verbatim. Low and high are identical because this is a
@@ -128,13 +194,15 @@ export function buildEstimate(
         : "Your catalog",
       fromCatalog: true,
       materialId: m.id,
-      basis: raw.basis ?? "",
+      supplierId: m.supplierId ?? null,
+      basis,
     });
   }
 
   for (const raw of output.custom_lines ?? []) {
     if (!raw?.name) continue;
-    const qtyMilli = toMilli(raw.qty);
+    const unitName = parseUnit(raw.unit) ?? raw.unit;
+    const { qtyMilli, basis } = resolveQty(raw.name, unitName, raw.qty, raw.basis ?? "", raw.dims, {});
     if (qtyMilli <= 0) continue;
 
     let low = toCents(raw.low);
@@ -145,23 +213,14 @@ export function buildEstimate(
     lines.push({
       material: raw.name,
       qtyMilli,
-      unit: parseUnit(raw.unit) ?? raw.unit,
+      unit: unitName,
       unitLowCents: withMarkup(low),
       unitHighCents: withMarkup(high),
       source: raw.source ?? "",
       fromCatalog: false,
       materialId: null,
-      basis: raw.basis ?? "",
+      basis,
     });
-  }
-
-  // ── computed bottom line ─────────────────────────────────────────────────
-
-  let subLow = 0;
-  let subHigh = 0;
-  for (const l of lines) {
-    subLow += extendCents(l.qtyMilli, l.unitLowCents);
-    subHigh += extendCents(l.qtyMilli, l.unitHighCents);
   }
 
   // Delivery is a pass-through cost, so it is not marked up.
@@ -169,39 +228,104 @@ export function buildEstimate(
   let delHigh = toCents(output.delivery?.high);
   if (delLow > delHigh) [delLow, delHigh] = [delHigh, delLow];
 
-  // Tax applies to materials, not to delivery. Computing it here is the whole
-  // reason the tax gate can be deleted.
-  const taxLow = applyBps(subLow, opts.taxRateBps);
-  const taxHigh = applyBps(subHigh, opts.taxRateBps);
-
-  return {
+  const built: BuiltEstimate = {
     lines,
-    subtotalLowCents: subLow,
-    subtotalHighCents: subHigh,
+    subtotalLowCents: 0,
+    subtotalHighCents: 0,
     deliveryLowCents: delLow,
     deliveryHighCents: delHigh,
-    taxLowCents: taxLow,
-    taxHighCents: taxHigh,
-    totalLowCents: subLow + delLow + taxLow,
-    totalHighCents: subHigh + delHigh + taxHigh,
+    haulSource: delHigh > 0 ? "model" : "none",
+    haulLabel: output.delivery?.source ? `Delivery (estimated) — ${output.delivery.source}` : "Delivery (estimated)",
+    depositCents: 0,
+    deposits: [],
+    taxLowCents: 0,
+    taxHighCents: 0,
+    totalLowCents: 0,
+    totalHighCents: 0,
     clarifications: Array.isArray(output.clarifications_needed)
       ? output.clarifications_needed.filter((c) => typeof c === "string").slice(0, 12)
       : [],
-    notes: typeof output.notes === "string" ? output.notes : "",
+    notes: typeof output.notes === "string" ? stripIds(output.notes) : "",
     droppedCatalogIds: dropped,
+    qtyMismatches: mismatches,
     catalogLineCount: lines.filter((l) => l.fromCatalog).length,
     customLineCount: lines.filter((l) => !l.fromCatalog).length,
+  };
+
+  return computeTotals(built, opts);
+}
+
+/**
+ * Recompute the bottom line from the lines, hauling and deposits.
+ *
+ * Called by buildEstimate and again after the locality engine swaps in
+ * substitutes and sets the haul. Pure: returns a new object.
+ */
+export function computeTotals(b: BuiltEstimate, opts: BuildOptions): BuiltEstimate {
+  let subLow = 0;
+  let subHigh = 0;
+  for (const l of b.lines) {
+    subLow += extendCents(l.qtyMilli, l.unitLowCents);
+    subHigh += extendCents(l.qtyMilli, l.unitHighCents);
+  }
+
+  const haulLowBase = opts.taxHaul ? b.deliveryLowCents : 0;
+  const haulHighBase = opts.taxHaul ? b.deliveryHighCents : 0;
+  const depBase = opts.taxDeposits ? b.depositCents : 0;
+
+  const taxLow = applyBps(subLow + haulLowBase + depBase, opts.taxRateBps);
+  const taxHigh = applyBps(subHigh + haulHighBase + depBase, opts.taxRateBps);
+
+  return {
+    ...b,
+    subtotalLowCents: subLow,
+    subtotalHighCents: subHigh,
+    taxLowCents: taxLow,
+    taxHighCents: taxHigh,
+    totalLowCents: subLow + b.deliveryLowCents + b.depositCents + taxLow,
+    totalHighCents: subHigh + b.deliveryHighCents + b.depositCents + taxHigh,
+    catalogLineCount: b.lines.filter((l) => l.fromCatalog).length,
+    customLineCount: b.lines.filter((l) => !l.fromCatalog).length,
   };
 }
 
 /**
- * Render to the LineItem[] shape app/page.tsx already renders.
- *
- * The three bottom-line rows are appended here so the existing table, PDF
- * export and markup logic keep working untouched — but unlike before, they are
- * computed values rather than something a model wrote down.
+ * Pallet deposits for the catalog lines that come on pallets.
+ * Pallets are whole: 520 sq ft of sod on 450 sq ft pallets is 2 pallets.
  */
-export function toLineItems(built: BuiltEstimate, taxRateBps: number): LineItem[] {
+export function computeDeposits(lines: BuiltLine[], catalog: Material[]): DepositLine[] {
+  const byId = new Map(catalog.map((m) => [m.id, m]));
+  const out: DepositLine[] = [];
+  for (const l of lines) {
+    if (!l.materialId) continue;
+    const m = byId.get(l.materialId);
+    if (!m || !m.unitsPerPalletMilli || m.unitsPerPalletMilli <= 0 || m.palletDepositCents <= 0) continue;
+    const pallets = Math.ceil(l.qtyMilli / m.unitsPerPalletMilli);
+    if (pallets <= 0) continue;
+    out.push({ material: m.name, pallets, cents: pallets * m.palletDepositCents });
+  }
+  return out;
+}
+
+/** The model sometimes quotes catalog uuids in its notes; nobody wants to read those. */
+export function stripIds(text: string): string {
+  return text
+    .replace(/\s*\((?:catalog\s*)?id\s*[:#]?\s*[0-9a-f-]{8,36}\)/gi, "")
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+const TAX_LABEL = (bps: number) =>
+  `Sales Tax (${(bps / 100).toFixed(bps % 100 === 0 ? 0 : 2)}%)`;
+
+/**
+ * Render to the LineItem[] shape the estimate screen renders.
+ *
+ * The bottom-line rows are appended here — computed values, never something a
+ * model wrote down.
+ */
+export function toLineItems(built: BuiltEstimate, taxRateBps: number, opts: Pick<BuildOptions, "taxHaul" | "taxDeposits"> = {}): LineItem[] {
   const items: LineItem[] = built.lines.map((l) => ({
     material: l.material,
     qty: fromMilli(l.qtyMilli),
@@ -209,26 +333,53 @@ export function toLineItems(built: BuiltEstimate, taxRateBps: number): LineItem[
     low: fromCents(l.unitLowCents),
     high: fromCents(l.unitHighCents),
     source: l.source,
+    kind: "material",
+    materialId: l.materialId,
+    fromCatalog: l.fromCatalog,
+    basis: l.basis,
+    haul: l.haulCents !== undefined ? fromCents(l.haulCents) : undefined,
+    miles: l.miles ?? null,
+    milesApprox: l.milesApprox,
+    alternatives: l.alternatives,
+    saved: l.savedCents ? fromCents(l.savedCents) : undefined,
+    replaced: l.replaced,
   }));
 
   if (built.deliveryLowCents > 0 || built.deliveryHighCents > 0) {
     items.push({
-      material: "Delivery (estimated)",
+      material: built.haulSource === "computed" ? "Hauling & delivery" : "Delivery (estimated)",
       qty: 1,
       unit: "total",
       low: fromCents(built.deliveryLowCents),
       high: fromCents(built.deliveryHighCents),
-      source: "Local supplier delivery",
+      source: built.haulLabel,
+      kind: "haul",
     });
   }
 
+  if (built.depositCents > 0) {
+    items.push({
+      material: "Pallet deposits (refundable)",
+      qty: 1,
+      unit: "total",
+      low: fromCents(built.depositCents),
+      high: fromCents(built.depositCents),
+      source: built.deposits.map((d) => `${d.pallets} pallet${d.pallets === 1 ? "" : "s"} — ${d.material}`).join("; "),
+      kind: "deposit",
+    });
+  }
+
+  const scope = ["materials", opts.taxHaul ? "hauling" : "", opts.taxDeposits ? "deposits" : ""]
+    .filter(Boolean)
+    .join(" + ");
   items.push({
-    material: `Iowa Sales Tax (${(taxRateBps / 100).toFixed(taxRateBps % 100 === 0 ? 0 : 2)}%)`,
+    material: TAX_LABEL(taxRateBps),
     qty: 1,
     unit: "total",
     low: fromCents(built.taxLowCents),
     high: fromCents(built.taxHighCents),
-    source: "Iowa state sales tax",
+    source: `On ${scope}`,
+    kind: "tax",
   });
 
   items.push({
@@ -238,6 +389,7 @@ export function toLineItems(built: BuiltEstimate, taxRateBps: number): LineItem[
     low: fromCents(built.totalLowCents),
     high: fromCents(built.totalHighCents),
     source: "—",
+    kind: "total",
   });
 
   return items;

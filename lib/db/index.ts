@@ -70,7 +70,26 @@ function connectionString(): string {
   return url;
 }
 
-export const db = drizzle(neon(connectionString()), { schema });
+function connect() {
+  return drizzle(neon(connectionString()), { schema });
+}
+
+type Db = ReturnType<typeof connect>;
+let instance: Db | null = null;
+
+/**
+ * Connected on first use, not at import. Importing a module that touches the
+ * database (a route, a geocoder with a cache) must not throw just because a
+ * test or a build step has no DATABASE_URL — the error belongs at the moment a
+ * query is actually attempted, where the caller can decide what to do.
+ */
+export const db: Db = new Proxy({} as Db, {
+  get(_target, prop) {
+    if (!instance) instance = connect();
+    const value = Reflect.get(instance as object, prop);
+    return typeof value === "function" ? value.bind(instance) : value;
+  },
+});
 
 export { schema };
 export * from "./schema";

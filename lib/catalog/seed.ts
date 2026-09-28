@@ -26,6 +26,9 @@ export interface SeedMaterial {
   supplierLocation: string;
   coverage: string;
   notes: string;
+  /** Substitute group; see materials.specClass. */
+  specClass?: string;
+  unitsPerPallet?: number;
 }
 
 export const CATEGORIES = [
@@ -120,6 +123,7 @@ export const SEED_CATALOG: SeedMaterial[] = [
   // ── aggregate ────────────────────────────────────────────────────────────
   {
     name: "Crushed limestone / road rock",
+    specClass: "Base rock (3/4 in minus)",
     category: "aggregate",
     unit: "ton",
     unitCost: 23.0,
@@ -130,6 +134,7 @@ export const SEED_CATALOG: SeedMaterial[] = [
   },
   {
     name: "Clean stone, 1 in",
+    specClass: "Drain rock (clean, 3/4-1.5 in)",
     category: "aggregate",
     unit: "ton",
     unitCost: 33.0,
@@ -160,6 +165,7 @@ export const SEED_CATALOG: SeedMaterial[] = [
   },
   {
     name: "Paver / leveling sand",
+    specClass: "Bedding sand",
     category: "aggregate",
     unit: "ton",
     unitCost: 27.0,
@@ -172,6 +178,7 @@ export const SEED_CATALOG: SeedMaterial[] = [
   // ── sod and seed ─────────────────────────────────────────────────────────
   {
     name: "Bluegrass blend sod",
+    unitsPerPallet: 450,
     category: "sod",
     unit: "sq ft",
     unitCost: 0.52,
@@ -317,6 +324,8 @@ export function seedRowsFor(ownerId: string) {
     supplierLocation: m.supplierLocation,
     coverage: m.coverage,
     notes: m.notes,
+    specClass: m.specClass ?? "",
+    unitsPerPalletMilli: m.unitsPerPallet ? m.unitsPerPallet * 1000 : null,
     isActive: true,
     // Seeded order becomes the initial "most common" order until real use
     // counts take over.

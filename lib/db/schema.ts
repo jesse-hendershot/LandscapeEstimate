@@ -17,6 +17,7 @@
 import { relations, sql } from "drizzle-orm";
 import {
   boolean,
+  doublePrecision,
   index,
   integer,
   jsonb,
@@ -37,9 +38,99 @@ export const profiles = pgTable("profiles", {
   /** Basis points, so 2250 = 22.5%. Integers only, same reason as money. */
   defaultMarkupBps: integer("default_markup_bps").notNull().default(2000),
   taxRateBps: integer("tax_rate_bps").notNull().default(700), // Iowa 7%
+  /**
+   * What the tax rate applies to. Materials are always taxed. The shop asked
+   * for "7% on everything", so hauling defaults on; refundable pallet deposits
+   * default off because they come back.
+   */
+  taxHaul: boolean("tax_haul").notNull().default(true),
+  taxDeposits: boolean("tax_deposits").notNull().default(false),
+
+  // ── locality ──
+  /** Where the trucks live. Every job adds a round trip from here per truck. */
+  shopAddress: text("shop_address").notNull().default(""),
+  shopLat: doublePrecision("shop_lat"),
+  shopLng: doublePrecision("shop_lng"),
+  /**
+   * Manual diesel price, cents per gallon. 0 means "use the weekly EIA Midwest
+   * retail price", which is the default and the right answer for most weeks.
+   */
+  dieselOverrideCents: integer("diesel_override_cents").notNull().default(0),
+  /** Average road speed of a working truck. Drives the time half of haul cost. */
+  avgMph: integer("avg_mph").notNull().default(35),
+  /** Per bulk load: scale, loading and dumping, minutes. */
+  loadMinutes: integer("load_minutes").notNull().default(20),
+  /** Per store stop: parking, finding it, paying, loading, minutes. */
+  pickupStopMinutes: integer("pickup_stop_minutes").notNull().default(25),
+  /** Dump trucks sent to a typical job. Overridable per estimate. */
+  trucksPerJob: integer("trucks_per_job").notNull().default(1),
+  /** Road miles assumed for a supplier with no known location. */
+  defaultHaulMiles: integer("default_haul_miles").notNull().default(15),
+
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ── trucks ─────────────────────────────────────────────────────────────────
+
+/**
+ * The shop's fleet. One row per truck. The haul planner reads capacity, mpg
+ * and hourly cost; everything else is for the humans.
+ */
+export const trucks = pgTable(
+  "trucks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    ownerId: text("owner_id").notNull(),
+    name: text("name").notNull(),
+    /** dump | pickup */
+    kind: text("kind").notNull().default("dump"),
+    /** Thousandths, like every other quantity. 14000 = 14 tons. */
+    capacityTonsMilli: integer("capacity_tons_milli").notNull().default(0),
+    capacityCuYdMilli: integer("capacity_cu_yd_milli").notNull().default(0),
+    /** Tenths of a mile per gallon. 60 = 6.0 mpg. */
+    mpgTenths: integer("mpg_tenths").notNull().default(60),
+    /** Driver + truck per hour, NOT including fuel (fuel is counted by the mile). */
+    costPerHourCents: integer("cost_per_hour_cents").notNull().default(0),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("trucks_owner_idx").on(t.ownerId)]
+);
+
+// ── suppliers ──────────────────────────────────────────────────────────────
+
+/**
+ * Places the shop buys from, with a location. Location is the whole point:
+ * a supplier without coordinates can't be priced on distance.
+ */
+export const suppliers = pgTable(
+  "suppliers",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    ownerId: text("owner_id").notNull(),
+    name: text("name").notNull(),
+    /** quarry | yard | big_box | nursery | sod_farm | other */
+    kind: text("kind").notNull().default("yard"),
+    address: text("address").notNull().default(""),
+    lat: doublePrecision("lat"),
+    lng: doublePrecision("lng"),
+    phone: text("phone").notNull().default(""),
+    notes: text("notes").notNull().default(""),
+    /** Flat fee when this supplier delivers (sod farms, block yards). */
+    deliveryFeeCents: integer("delivery_fee_cents").notNull().default(0),
+    /** Set when the supplier was added from the federal mine list. */
+    mshaId: text("msha_id"),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("suppliers_owner_idx").on(t.ownerId),
+    uniqueIndex("suppliers_owner_name_idx").on(t.ownerId, t.name),
+  ]
+);
 
 // ── material catalog ───────────────────────────────────────────────────────
 
@@ -74,6 +165,23 @@ export const materials = pgTable(
      */
     coverage: text("coverage").notNull().default(""),
     notes: text("notes").notNull().default(""),
+
+    // ── locality ──
+    /** Where this price comes from. Null for legacy rows priced before suppliers existed. */
+    supplierId: uuid("supplier_id").references(() => suppliers.id, { onDelete: "set null" }),
+    /**
+     * Substitute group. Materials sharing a non-empty class do the same job,
+     * and the estimator picks whichever is cheapest delivered to the site.
+     * The shop decides what's interchangeable; the app never guesses.
+     */
+    specClass: text("spec_class").notNull().default(""),
+    /** Thousandths of a ton per loose cu yd, off the scale ticket. Null = typical value. */
+    tonsPerCuYdMilli: integer("tons_per_cu_yd_milli"),
+    /** auto | dump | pickup | delivered | none */
+    haul: text("haul").notNull().default("auto"),
+    /** Pallets: units per pallet (thousandths) and the refundable deposit per pallet. */
+    unitsPerPalletMilli: integer("units_per_pallet_milli"),
+    palletDepositCents: integer("pallet_deposit_cents").notNull().default(0),
 
     isActive: boolean("is_active").notNull().default(true),
     /** Incremented each time this material lands on an estimate. Drives ordering. */
@@ -131,6 +239,40 @@ export const estimates = pgTable(
 
     runId: text("run_id"),
 
+    // ── locality ──
+    jobLat: doublePrecision("job_lat"),
+    jobLng: doublePrecision("job_lng"),
+    /** Refundable pallet deposits. Not marked up; taxed only if the profile says so. */
+    depositCents: integer("deposit_cents").notNull().default(0),
+    /** Snapshotted with the rates: whether haul and deposits were taxed. */
+    taxHaul: boolean("tax_haul").notNull().default(true),
+    taxDeposits: boolean("tax_deposits").notNull().default(false),
+    /** The load plan: trucks, loads, miles, diesel price used. */
+    haulDetail: jsonb("haul_detail").$type<unknown>(),
+    /** Parcel, elevation and drawn measurements the estimate was built on. */
+    site: jsonb("site").$type<unknown>(),
+    /** The model's raw JSON, kept so a follow-up answer can refine rather than restart. */
+    modelOutput: jsonb("model_output").$type<unknown>(),
+
+    // ── the estimator's corrections ──
+    /**
+     * The estimate as the estimator left it (material rows only). The lines in
+     * estimate_lines stay exactly as generated, so the difference between the
+     * two is the label set: what the app got wrong, by how much.
+     */
+    editedLines: jsonb("edited_lines").$type<unknown>(),
+    editedTotalLowCents: integer("edited_total_low_cents"),
+    editedTotalHighCents: integer("edited_total_high_cents"),
+    editedAt: timestamp("edited_at", { withTimezone: true }),
+
+    // ── field test: the app versus the legal pad ──
+    handTotalCents: integer("hand_total_cents"),
+    handMinutes: integer("hand_minutes"),
+    /** Seconds from opening the form to saving, measured in the browser. */
+    appSeconds: integer("app_seconds"),
+    actualTotalCents: integer("actual_total_cents"),
+    fieldNotes: text("field_notes").notNull().default(""),
+
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -167,9 +309,53 @@ export const estimateLines = pgTable(
     unitHighCents: integer("unit_high_cents").notNull(),
     source: text("source").notNull().default(""),
 
+    /** How the quantity was worked out, in words. */
+    basis: text("basis").notNull().default(""),
+    /** This line's share of the haul, cents. */
+    haulCents: integer("haul_cents").notNull().default(0),
+    /** One-way road miles from the job to this line's supplier. */
+    miles: doublePrecision("miles"),
+    /** Other members of the substitute class, priced delivered to this job. */
+    alternatives: jsonb("alternatives").$type<unknown>(),
+
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index("estimate_lines_estimate_idx").on(t.estimateId, t.position)]
+);
+
+// ── shared caches (not owner-scoped: nothing here is any shop's data) ─────
+
+/** Address -> coordinates. Geocoders are slow and rate-limited; addresses repeat. */
+export const geocodeCache = pgTable("geocode_cache", {
+  query: text("query").primaryKey(),
+  lat: doublePrecision("lat"),
+  lng: doublePrecision("lng"),
+  matched: text("matched").notNull().default(""),
+  source: text("source").notNull().default(""),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Road distance between two rounded coordinates. */
+export const distanceCache = pgTable("distance_cache", {
+  key: text("key").primaryKey(),
+  miles: doublePrecision("miles").notNull(),
+  minutes: doublePrecision("minutes"),
+  source: text("source").notNull().default(""),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Weekly diesel price, one row per series per week. */
+export const fuelPrices = pgTable(
+  "fuel_prices",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    series: text("series").notNull(),
+    period: text("period").notNull(),
+    centsPerGal: integer("cents_per_gal").notNull(),
+    source: text("source").notNull().default(""),
+    fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("fuel_prices_series_period_idx").on(t.series, t.period)]
 );
 
 // ── run log and labels ─────────────────────────────────────────────────────
@@ -254,6 +440,10 @@ export const estimateLinesRelations = relations(estimateLines, ({ one }) => ({
 
 export type Profile = typeof profiles.$inferSelect;
 export type NewProfile = typeof profiles.$inferInsert;
+export type TruckRow = typeof trucks.$inferSelect;
+export type NewTruckRow = typeof trucks.$inferInsert;
+export type Supplier = typeof suppliers.$inferSelect;
+export type NewSupplier = typeof suppliers.$inferInsert;
 export type Material = typeof materials.$inferSelect;
 export type NewMaterial = typeof materials.$inferInsert;
 export type EstimateRow = typeof estimates.$inferSelect;
@@ -262,3 +452,10 @@ export type EstimateLineRow = typeof estimateLines.$inferSelect;
 export type NewEstimateLineRow = typeof estimateLines.$inferInsert;
 export type EstimateRun = typeof estimateRuns.$inferSelect;
 export type LineEdit = typeof lineEdits.$inferSelect;
+
+export const materialsRelations = relations(materials, ({ one }) => ({
+  supplierRow: one(suppliers, {
+    fields: [materials.supplierId],
+    references: [suppliers.id],
+  }),
+}));
