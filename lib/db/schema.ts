@@ -56,6 +56,13 @@ export const profiles = pgTable("profiles", {
    * retail price", which is the default and the right answer for most weeks.
    */
   dieselOverrideCents: integer("diesel_override_cents").notNull().default(0),
+  /** Same idea for gasoline (weekly EIA Midwest regular when 0). */
+  gasOverrideCents: integer("gas_override_cents").notNull().default(0),
+  /**
+   * Dyed off-road diesel for the machines. 0 = road diesel minus the federal
+   * and Iowa road taxes it doesn't carry.
+   */
+  offroadOverrideCents: integer("offroad_override_cents").notNull().default(0),
   /** Average road speed of a working truck. Drives the time half of haul cost. */
   avgMph: integer("avg_mph").notNull().default(35),
   /** Per bulk load: scale, loading and dumping, minutes. */
@@ -74,6 +81,28 @@ export const profiles = pgTable("profiles", {
 // ── trucks ─────────────────────────────────────────────────────────────────
 
 /**
+ * Trailers. A dump trailer behind a pickup is how a lot of small shops haul
+ * rock, so a truck can pull one and its capacity becomes the trailer's. An
+ * equipment trailer is what a machine rides to the job on.
+ */
+export const trailers = pgTable(
+  "trailers",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    ownerId: text("owner_id").notNull(),
+    name: text("name").notNull(),
+    /** dump | equipment | utility */
+    kind: text("kind").notNull().default("dump"),
+    capacityTonsMilli: integer("capacity_tons_milli").notNull().default(0),
+    capacityCuYdMilli: integer("capacity_cu_yd_milli").notNull().default(0),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("trailers_owner_idx").on(t.ownerId)]
+);
+
+/**
  * The shop's fleet. One row per truck. The haul planner reads capacity, mpg
  * and hourly cost; everything else is for the humans.
  */
@@ -85,6 +114,10 @@ export const trucks = pgTable(
     name: text("name").notNull(),
     /** dump | pickup */
     kind: text("kind").notNull().default("dump"),
+    /** diesel | gas — which weekly price its miles are costed at. */
+    fuel: text("fuel").notNull().default("diesel"),
+    /** The trailer it usually pulls. A dump trailer sets its load size. */
+    trailerId: uuid("trailer_id").references(() => trailers.id, { onDelete: "set null" }),
     /** Thousandths, like every other quantity. 14000 = 14 tons. */
     capacityTonsMilli: integer("capacity_tons_milli").notNull().default(0),
     capacityCuYdMilli: integer("capacity_cu_yd_milli").notNull().default(0),
@@ -97,6 +130,34 @@ export const trucks = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index("trucks_owner_idx").on(t.ownerId)]
+);
+
+/**
+ * Machines: skid steers, mini excavators, tractors. Estimates count their
+ * fuel (engine hours x gallons an hour) and the trips to haul them out.
+ */
+export const equipment = pgTable(
+  "equipment",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    ownerId: text("owner_id").notNull(),
+    name: text("name").notNull(),
+    /** skid_steer | track_loader | mini_excavator | excavator | tractor | other */
+    kind: text("kind").notNull().default("skid_steer"),
+    /** offroad | diesel | gas */
+    fuel: text("fuel").notNull().default("offroad"),
+    /** Tenths of a gallon per engine hour. 30 = 3.0 gal/hr. */
+    galPerHourTenths: integer("gal_per_hour_tenths").notNull().default(0),
+    /** The trailer it rides to the job on. Null = it drives there or lives on site. */
+    trailerId: uuid("trailer_id").references(() => trailers.id, { onDelete: "set null" }),
+    /** Round trips shop <-> job to haul it out and bring it back. */
+    haulTrips: integer("haul_trips").notNull().default(1),
+    notes: text("notes").notNull().default(""),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("equipment_owner_idx").on(t.ownerId)]
 );
 
 // ── suppliers ──────────────────────────────────────────────────────────────
@@ -249,6 +310,10 @@ export const estimates = pgTable(
     taxDeposits: boolean("tax_deposits").notNull().default(false),
     /** The load plan: trucks, loads, miles, diesel price used. */
     haulDetail: jsonb("haul_detail").$type<unknown>(),
+    /** Fuel burned by the machines on site. Taxed with hauling. */
+    machineCents: integer("machine_cents").notNull().default(0),
+    /** Machine hours as generated: [{ equipmentId, hours, basis }]. */
+    machines: jsonb("machines").$type<unknown>(),
     /** Parcel, elevation and drawn measurements the estimate was built on. */
     site: jsonb("site").$type<unknown>(),
     /** The model's raw JSON, kept so a follow-up answer can refine rather than restart. */
@@ -442,6 +507,10 @@ export type Profile = typeof profiles.$inferSelect;
 export type NewProfile = typeof profiles.$inferInsert;
 export type TruckRow = typeof trucks.$inferSelect;
 export type NewTruckRow = typeof trucks.$inferInsert;
+export type TrailerRow = typeof trailers.$inferSelect;
+export type NewTrailerRow = typeof trailers.$inferInsert;
+export type EquipmentRow = typeof equipment.$inferSelect;
+export type NewEquipmentRow = typeof equipment.$inferInsert;
 export type Supplier = typeof suppliers.$inferSelect;
 export type NewSupplier = typeof suppliers.$inferInsert;
 export type Material = typeof materials.$inferSelect;

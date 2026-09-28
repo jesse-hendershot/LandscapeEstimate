@@ -36,12 +36,15 @@ Anything off-catalog — a specific plant, an odd block — gets researched with
 
 Everything is measured from the job site:
 
-- Each bulk load is a round trip job → supplier → job. Loads are split across the trucks on the job (biggest first), by weight **and** by bed volume — light material fills the bed before it hits the scale limit.
+- Each bulk load is a round trip job → supplier → job. Loads are split across the trucks on the job (biggest first), by weight **and** by bed volume — light material fills the bed before it hits the scale limit. A pickup pulling a dump trailer hauls the trailer's load.
 - Store runs (bags, rolls, pipe) are one round trip per store, however many items.
 - Each truck that goes out adds one shop → job → shop trip at the end. More trucks finish sooner; each one adds its own shop trip.
-- Every trip costs fuel (miles ÷ mpg × this week's diesel) plus time (hours × the truck's hourly cost, which covers driver and wear but not fuel).
+- Machines that ride out on a trailer add their own shop round trips.
+- Every trip costs fuel (miles ÷ mpg × this week's price for that truck's fuel, diesel or gas) plus time (hours × the truck's hourly cost, which covers driver and wear but not fuel).
 
-Diesel is the EIA's weekly Midwest retail price, refreshed automatically. Road miles come from OpenRouteService's truck profile when a key is set, otherwise straight-line × 1.3 (flagged "approx" everywhere it shows).
+**Machine fuel** is its own line: the model estimates engine hours per machine from the job (feet of trench, yards moved, square feet graded), the estimator can change them, and the app multiplies by gallons per hour and the machine's fuel price. Trucks, trailers and machines are all set up and edited in Settings.
+
+Diesel and gas are the EIA's weekly Midwest retail prices, refreshed automatically. Off-road diesel is road diesel less the federal and Iowa road taxes, unless the shop enters what it pays. Road miles come from OpenRouteService's truck profile when a key is set, otherwise straight-line × 1.3 (flagged "approx" everywhere it shows).
 
 Materials that do the same job share a **substitute group** in the catalog ("Drain rock" might hold 3/4 in clean limestone from one quarry and #57 from another). The shop decides what's interchangeable; the app never guesses. Each estimate line shows the alternatives, priced delivered, with a one-click swap.
 
@@ -62,7 +65,8 @@ Every estimate is saved. The field-test page puts the app's total next to the ha
 - **Plain-English job entry.** Two words is enough; the site data fills in the rest.
 - **Property map.** County lot lines, aerial photo, draw areas and lines, ground fall along a drain.
 - **Delivered-cost pricing.** Substitutes compared by material + haul to this address.
-- **Hauling that follows your trucks.** Loads, store runs, shop trips, weekly diesel. Change the number of trucks and it re-plans.
+- **Hauling that follows your trucks.** Loads, store runs, shop trips, weekly diesel and gas. Trucks, dump trailers and equipment trailers. Change the number of trucks and it re-plans.
+- **Machine fuel.** Engine hours per machine, gallons per hour, off-road diesel — editable on every estimate.
 - **Pallet deposits and tax scope.** Refundable deposits on their own line; tax on materials, hauling, and (optionally) deposits.
 - **Quarry finder.** Federal mine records, sorted by distance.
 - **Receipt scanning.** Photo in, price updates proposed, you approve.
@@ -78,7 +82,7 @@ Every estimate is saved. The field-test page puts the app's total next to the ha
 | Language | TypeScript |
 | Research | Anthropic API with web search and vision |
 | Maps | Leaflet; Johnson County GIS; USGS National Map imagery and 3DEP elevation |
-| Public data | US Census geocoder, OpenStreetMap Nominatim, EIA diesel prices, MSHA mine records |
+| Public data | US Census geocoder, OpenStreetMap Nominatim, EIA diesel and gas prices, MSHA mine records |
 | Database | Neon (serverless Postgres) + Drizzle ORM |
 | Auth | Clerk |
 | PDF | jsPDF + jspdf-autotable |
@@ -134,7 +138,7 @@ npm run dev
 
 Open `http://localhost:3000`, create an account, and generate an estimate. A starter catalog of 25 common materials and two placeholder trucks seed automatically on your first run. Then:
 
-1. **Settings** — shop address, your real trucks (capacity, mpg, cost per hour).
+1. **Settings** — shop address, trailers, your real trucks (fuel, mpg, cost per hour, which trailer each pulls), and machines (fuel burn, which trailer they ride on).
 2. **Suppliers** — add where you buy, or find quarries near you.
 3. **Materials** — link each material to its supplier, set substitute groups, correct prices (or scan a receipt).
 

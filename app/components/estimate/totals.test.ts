@@ -6,7 +6,7 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 
 import type { Material } from "@/lib/db/schema";
-import { buildEstimate, toLineItems } from "@/lib/estimate/build";
+import { buildEstimate, computeTotals as computeTotalsServer, toLineItems } from "@/lib/estimate/build";
 import { bottomFrom, computeTotals, isMaterialRow } from "./totals";
 
 const m = {
@@ -38,5 +38,19 @@ test("client totals match the server's cents exactly", () => {
     assert.equal(Math.round(t.grandLow * 100), built.totalLowCents);
     assert.equal(Math.round(t.grandHigh * 100), built.totalHighCents);
     assert.equal(Math.round(t.taxLow * 100), built.taxLowCents);
+  }
+});
+
+test("machine fuel: the screen adds and taxes it exactly like the server", () => {
+  for (const taxHaul of [true, false]) {
+    const built0 = buildEstimate({ catalog_lines: [{ catalogId: m.id, qty: 6 }] }, [m], { taxRateBps: 700, taxHaul });
+    const built = computeTotalsServer({ ...built0, deliveryLowCents: 9137, deliveryHighCents: 9137, machineCents: 4116, machineLabel: "Skid steer 4 hr" }, { taxRateBps: 700, taxHaul });
+    const items = toLineItems(built, 700, { taxHaul });
+    const bottom = bottomFrom(items);
+    assert.equal(bottom.machine, 41.16);
+    const t = computeTotals(items.filter(isMaterialRow), bottom, { ratePct: 7, haul: taxHaul, deposits: false });
+    assert.equal(Math.round(t.grandLow * 100), built.totalLowCents);
+    assert.equal(Math.round(t.taxLow * 100), built.taxLowCents);
+    assert.ok(!items.filter(isMaterialRow).some((i) => i.kind === "machine"));
   }
 });

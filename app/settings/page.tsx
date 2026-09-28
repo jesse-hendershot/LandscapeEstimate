@@ -4,197 +4,52 @@
  * Settings: the handful of numbers that make hauling real.
  *
  * Shop address and trucks matter most — every estimate measures from the job
- * to each supplier and adds a round trip from the shop per truck. Everything
- * else has a sensible default.
+ * to each supplier and adds a round trip from the shop per truck. Trailers
+ * size the loads; machines add their fuel and the trips to haul them out.
+ * Everything else has a sensible default. All of it is editable here.
  */
 
 import { useEffect, useState } from "react";
 
 import { C } from "../theme";
 import type { SettingsData } from "../components/estimate/types";
+import { MachineRow, TrailerRow, TruckRow, type Machine, type Trailer, type Truck } from "./FleetRows";
+import { addBtn, btn, card, h2, help, input, label, Num } from "./ui";
 
-interface Truck {
-  id: string;
-  name: string;
-  kind: "dump" | "pickup";
-  capacityTons: number;
-  capacityCuYd: number;
-  mpg: number;
-  costPerHour: number;
-}
-
-interface Diesel {
+interface Price {
   centsPerGal: number;
   label: string;
   source: string;
 }
 
-const card: React.CSSProperties = {
-  background: "#fff",
-  borderRadius: 14,
-  border: `1px solid ${C.line}`,
-  padding: 24,
-  marginBottom: 20,
-};
-const h2: React.CSSProperties = { fontSize: 22, fontWeight: 700, margin: "0 0 6px", color: C.green };
-const help: React.CSSProperties = { fontSize: 14, color: C.grey, margin: "0 0 16px", lineHeight: 1.5 };
-const label: React.CSSProperties = { display: "block", fontSize: 15, fontWeight: 700, marginBottom: 6 };
-const input: React.CSSProperties = {
-  fontSize: 17,
-  padding: "10px 12px",
-  border: "2px solid #d1d5db",
-  borderRadius: 8,
-  width: "100%",
-  background: "#fff",
-  boxSizing: "border-box",
-};
-const btn: React.CSSProperties = {
-  background: C.green,
-  color: "#fff",
-  fontSize: 17,
-  fontWeight: 700,
-  padding: "12px 22px",
-  borderRadius: 10,
-  border: "none",
-  cursor: "pointer",
-};
-
-function Num({
-  value,
-  onChange,
-  step = "any",
-  suffix,
-  width = 140,
-  ariaLabel,
-}: {
-  value: number;
-  onChange: (n: number) => void;
-  step?: string;
-  suffix?: string;
-  width?: number;
-  ariaLabel: string;
-}) {
-  const [text, setText] = useState(String(value));
-  const [last, setLast] = useState(value);
-  // Follow outside changes (e.g. after a save) without fighting the typist.
-  if (value !== last) {
-    setLast(value);
-    setText(String(value));
-  }
-  return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-      <input
-        aria-label={ariaLabel}
-        inputMode="decimal"
-        type="number"
-        step={step}
-        value={text}
-        onChange={(e) => {
-          setText(e.target.value);
-          const n = parseFloat(e.target.value);
-          if (Number.isFinite(n)) onChange(n);
-        }}
-        style={{ ...input, width }}
-      />
-      {suffix && <span style={{ fontSize: 15, color: C.grey }}>{suffix}</span>}
-    </span>
-  );
-}
-
-function TruckRow({ truck, onSaved, onRemoved }: { truck: Truck; onSaved: (t: Truck) => void; onRemoved: (id: string) => void }) {
-  const [t, setT] = useState(truck);
-  const [state, setState] = useState<"" | "saving" | "saved" | string>("");
-  const dirty = JSON.stringify(t) !== JSON.stringify(truck);
-
-  async function save() {
-    setState("saving");
-    const res = await fetch(`/api/trucks/${t.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: t.name, kind: t.kind, capacityTons: t.capacityTons, capacityCuYd: t.capacityCuYd, mpg: t.mpg, costPerHour: t.costPerHour }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      setState(Object.values(data.fields ?? {})[0] as string ?? data.error ?? "Couldn't save");
-      return;
-    }
-    onSaved(data.truck);
-    setState("saved");
-  }
-
-  async function remove() {
-    if (!confirm(`Remove "${t.name}"?`)) return;
-    const res = await fetch(`/api/trucks/${t.id}`, { method: "DELETE" });
-    if (res.ok) onRemoved(t.id);
-  }
-
-  return (
-    <div style={{ border: `1px solid ${C.line}`, borderRadius: 12, padding: 16, display: "grid", gap: 12 }}>
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-        <input aria-label="Truck name" value={t.name} onChange={(e) => setT({ ...t, name: e.target.value })} style={{ ...input, flex: "1 1 220px", fontWeight: 700 }} />
-        <select aria-label="Truck type" value={t.kind} onChange={(e) => setT({ ...t, kind: e.target.value as Truck["kind"] })} style={{ ...input, width: 190 }}>
-          <option value="dump">Dump truck (bulk)</option>
-          <option value="pickup">Pickup (store runs)</option>
-        </select>
-      </div>
-      <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
-        <label style={{ fontSize: 14, fontWeight: 700 }}>
-          Carries
-          <div style={{ marginTop: 4 }}>
-            <Num ariaLabel="Capacity in tons" value={t.capacityTons} onChange={(n) => setT({ ...t, capacityTons: n })} suffix="tons" width={90} />
-          </div>
-        </label>
-        <label style={{ fontSize: 14, fontWeight: 700 }}>
-          Bed holds
-          <div style={{ marginTop: 4 }}>
-            <Num ariaLabel="Capacity in cubic yards" value={t.capacityCuYd} onChange={(n) => setT({ ...t, capacityCuYd: n })} suffix="cu yd" width={90} />
-          </div>
-        </label>
-        <label style={{ fontSize: 14, fontWeight: 700 }}>
-          Gets
-          <div style={{ marginTop: 4 }}>
-            <Num ariaLabel="Miles per gallon" value={t.mpg} onChange={(n) => setT({ ...t, mpg: n })} suffix="mpg" width={80} />
-          </div>
-        </label>
-        <label style={{ fontSize: 14, fontWeight: 700 }}>
-          Truck + driver, per hour (not fuel)
-          <div style={{ marginTop: 4 }}>
-            <Num ariaLabel="Cost per hour" value={t.costPerHour} onChange={(n) => setT({ ...t, costPerHour: n })} suffix="$/hr" width={100} />
-          </div>
-        </label>
-      </div>
-      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-        <button type="button" onClick={save} disabled={!dirty || state === "saving"} style={{ ...btn, padding: "8px 16px", fontSize: 15, opacity: dirty ? 1 : 0.5 }}>
-          {state === "saving" ? "Saving…" : "Save truck"}
-        </button>
-        {state === "saved" && !dirty && <span style={{ color: C.green, fontWeight: 700 }}>✓ Saved</span>}
-        {state && state !== "saving" && state !== "saved" && <span style={{ color: C.red }}>{state}</span>}
-        <button type="button" onClick={remove} style={{ marginLeft: "auto", border: "none", background: "none", color: C.red, fontWeight: 700, cursor: "pointer" }}>
-          Remove
-        </button>
-      </div>
-    </div>
-  );
+interface Fuel {
+  diesel: Price;
+  gas: Price;
+  offroad: Price;
 }
 
 export default function SettingsPage() {
   const [s, setS] = useState<SettingsData | null>(null);
   const [saved, setSaved] = useState<SettingsData | null>(null);
-  const [diesel, setDiesel] = useState<Diesel | null>(null);
+  const [fuel, setFuel] = useState<Fuel | null>(null);
   const [trucks, setTrucks] = useState<Truck[]>([]);
+  const [trailers, setTrailers] = useState<Trailer[]>([]);
+  const [machines, setMachines] = useState<Machine[]>([]);
   const [msg, setMsg] = useState<{ kind: "ok" | "warn" | "err"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     (async () => {
-      const [a, b] = await Promise.all([fetch("/api/settings"), fetch("/api/trucks")]);
+      const [a, b, c, d] = await Promise.all([fetch("/api/settings"), fetch("/api/trucks"), fetch("/api/trailers"), fetch("/api/equipment")]);
       if (a.ok) {
         const j = await a.json();
         setS(j.settings);
         setSaved(j.settings);
-        setDiesel(j.diesel);
+        setFuel(j.fuel);
       }
       if (b.ok) setTrucks((await b.json()).trucks);
+      if (c.ok) setTrailers((await c.json()).trailers);
+      if (d.ok) setMachines((await d.json()).equipment);
     })();
   }, []);
 
@@ -221,7 +76,7 @@ export default function SettingsPage() {
       }
       setS(j.settings);
       setSaved(j.settings);
-      setDiesel(j.diesel);
+      setFuel(j.fuel);
       setMsg(j.warning ? { kind: "warn", text: j.warning } : { kind: "ok", text: "✓ Settings saved" });
     } catch {
       setMsg({ kind: "err", text: "Network error — not saved" });
@@ -230,17 +85,48 @@ export default function SettingsPage() {
     }
   }
 
-  async function addTruck() {
-    const res = await fetch("/api/trucks", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: "New truck", kind: "dump", capacityTons: 7, capacityCuYd: 5, mpg: 8, costPerHour: 60 }),
-    });
-    if (res.ok) {
-      const { truck } = await res.json();
-      setTrucks((t) => [...t, truck]);
-    }
+  async function post<T>(url: string, body: unknown, key: string): Promise<T | null> {
+    const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    return res.ok ? ((await res.json())[key] as T) : null;
   }
+
+  async function addTruck() {
+    const truck = await post<Truck>(
+      "/api/trucks",
+      { name: "New truck", kind: "pickup", fuel: "diesel", trailerId: null, capacityTons: 1, capacityCuYd: 1, mpg: 12, costPerHour: 45 },
+      "truck"
+    );
+    if (truck) setTrucks((t) => [...t, truck]);
+  }
+
+  async function addTrailer() {
+    const trailer = await post<Trailer>("/api/trailers", { name: "New dump trailer", kind: "dump", capacityTons: 5, capacityCuYd: 4 }, "trailer");
+    if (trailer) setTrailers((t) => [...t, trailer]);
+  }
+
+  async function addMachine() {
+    const rides = trailers.find((t) => t.kind === "equipment") ?? null;
+    const machine = await post<Machine>(
+      "/api/equipment",
+      { name: "New machine", kind: "skid_steer", fuel: "offroad", galPerHour: 3, trailerId: rides?.id ?? null, haulTrips: 1, notes: "" },
+      "equipment"
+    );
+    if (machine) setMachines((m) => [...m, machine]);
+  }
+
+  const fuelBox = (key: "dieselOverride" | "gasOverride" | "offroadOverride", title: string, price: Price | undefined, blurb: string) => (
+    <div style={{ display: "grid", gap: 6 }}>
+      <span style={label}>{title}</span>
+      {price && <span style={{ fontSize: 15 }}>This week: {price.label}</span>}
+      <span style={{ fontSize: 13, color: C.grey }}>{blurb}</span>
+      <label style={{ fontSize: 14, fontWeight: 700, marginTop: 4 }}>
+        Use my own price instead (0 = automatic)
+        <div style={{ marginTop: 4 }}>
+          <Num ariaLabel={`${title} price override`} value={s[key]} onChange={(n) => set(key, n)} suffix="$/gal" width={110} />
+        </div>
+      </label>
+    </div>
+  );
 
   return (
     <main style={{ flex: 1, background: C.bg }}>
@@ -272,34 +158,82 @@ export default function SettingsPage() {
         </section>
 
         <section style={card}>
+          <h2 style={h2}>Trailers</h2>
+          <p style={help}>
+            Add these first, then pick which truck pulls which. A dump trailer sets how much rock one trip carries; an equipment trailer is what a
+            machine rides out on.
+          </p>
+          <div style={{ display: "grid", gap: 12 }}>
+            {trailers.map((t) => (
+              <TrailerRow
+                key={t.id}
+                trailer={t}
+                onSaved={(nt) => setTrailers((all) => all.map((x) => (x.id === nt.id ? nt : x)))}
+                onRemoved={(id) => {
+                  setTrailers((all) => all.filter((x) => x.id !== id));
+                  setTrucks((all) => all.map((x) => (x.trailerId === id ? { ...x, trailerId: null } : x)));
+                  setMachines((all) => all.map((x) => (x.trailerId === id ? { ...x, trailerId: null } : x)));
+                }}
+              />
+            ))}
+          </div>
+          <button type="button" onClick={addTrailer} style={addBtn}>
+            + Add a trailer
+          </button>
+        </section>
+
+        <section style={card}>
           <h2 style={h2}>Trucks</h2>
           <p style={help}>
-            Bulk rock and dirt ride the dump trucks; bags, rolls and pipe are store runs in the pickup. The hourly cost is the truck and the driver&apos;s
-            time — fuel is figured separately from the miles and this week&apos;s diesel.
+            Rock and dirt go in a dump truck or a truck pulling a dump trailer; bags, rolls and pipe are store runs in a pickup. The hourly cost is the
+            truck and the driver&apos;s time — fuel is figured separately from the miles and this week&apos;s diesel or gas price.
           </p>
           <div style={{ display: "grid", gap: 12 }}>
             {trucks.map((t) => (
               <TruckRow
-                key={t.id}
+                key={`${t.id}-${trailers.length}`}
                 truck={t}
+                trailers={trailers}
                 onSaved={(nt) => setTrucks((all) => all.map((x) => (x.id === nt.id ? nt : x)))}
                 onRemoved={(id) => setTrucks((all) => all.filter((x) => x.id !== id))}
               />
             ))}
           </div>
-          <button type="button" onClick={addTruck} style={{ marginTop: 14, background: "#fff", color: C.green, border: `2px solid ${C.green}`, fontSize: 16, fontWeight: 700, padding: "10px 18px", borderRadius: 10, cursor: "pointer" }}>
+          <button type="button" onClick={addTruck} style={addBtn}>
             + Add a truck
           </button>
         </section>
 
         <section style={card}>
-          <h2 style={h2}>Diesel</h2>
-          <p style={help}>Updated weekly from the government&apos;s Midwest retail diesel price. Put your own number in only if you buy fuel on a fixed contract.</p>
-          {diesel && <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 12 }}>This week: {diesel.label}</div>}
-          <label>
-            <span style={label}>Use my own price instead (0 = automatic)</span>
-            <Num ariaLabel="Diesel price override" value={s.dieselOverride} onChange={(n) => set("dieselOverride", n)} suffix="$/gal" />
-          </label>
+          <h2 style={h2}>Machines</h2>
+          <p style={help}>
+            Skid steers, excavators, tractors. Each estimate figures how many hours a job needs on each one, then counts the fuel it burns and the trips
+            to haul it out. You can change the hours on any estimate.
+          </p>
+          <div style={{ display: "grid", gap: 12 }}>
+            {machines.map((m) => (
+              <MachineRow
+                key={`${m.id}-${trailers.length}`}
+                machine={m}
+                trailers={trailers}
+                onSaved={(nm) => setMachines((all) => all.map((x) => (x.id === nm.id ? nm : x)))}
+                onRemoved={(id) => setMachines((all) => all.filter((x) => x.id !== id))}
+              />
+            ))}
+          </div>
+          <button type="button" onClick={addMachine} style={addBtn}>
+            + Add a machine
+          </button>
+        </section>
+
+        <section style={card}>
+          <h2 style={h2}>Fuel</h2>
+          <p style={help}>Road diesel and gas update weekly from the government&apos;s Midwest retail prices. Put your own number in only if you pay something different.</p>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 20 }}>
+            {fuelBox("dieselOverride", "Road diesel", fuel?.diesel, "Diesel trucks' miles.")}
+            {fuelBox("gasOverride", "Gas", fuel?.gas, "Gas trucks' miles, like an F-150.")}
+            {fuelBox("offroadOverride", "Off-road diesel", fuel?.offroad, "The machines. Estimated as road diesel minus the road taxes dyed fuel doesn't pay.")}
+          </div>
         </section>
 
         <section style={card}>
@@ -343,7 +277,7 @@ export default function SettingsPage() {
             </div>
             <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 16 }}>
               <input type="checkbox" checked={s.taxHaul} onChange={(e) => set("taxHaul", e.target.checked)} style={{ width: 22, height: 22 }} />
-              Charge tax on hauling too
+              Charge tax on hauling and machine fuel too
             </label>
             <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 16 }}>
               <input type="checkbox" checked={s.taxDeposits} onChange={(e) => set("taxDeposits", e.target.checked)} style={{ width: 22, height: 22 }} />

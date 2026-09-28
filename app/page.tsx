@@ -18,6 +18,7 @@ import { C } from "./theme";
 import { ClarificationInput } from "./components/estimate/Clarifications";
 import EstimateTable from "./components/estimate/EstimateTable";
 import HaulPanel from "./components/estimate/HaulPanel";
+import MachinePanel, { type EquipmentOption } from "./components/estimate/MachinePanel";
 import { downloadEstimatePdf } from "./components/estimate/pdf";
 import { bottomFrom, computeTotals, fmt, isMaterialRow, type Bottom } from "./components/estimate/totals";
 import type { EstimateData, LineItem, MapMeasurement, SettingsData, SiteSummary } from "./components/estimate/types";
@@ -37,7 +38,7 @@ const LOADING_MSGS = [
   "🧮 Putting your estimate together…",
 ];
 
-const EMPTY_BOTTOM: Bottom = { haul: 0, haulLabel: "", haulComputed: false, deposit: 0, depositLabel: "" };
+const EMPTY_BOTTOM: Bottom = { haul: 0, haulLabel: "", haulComputed: false, machine: 0, machineLabel: "", deposit: 0, depositLabel: "" };
 
 function TotalRow({ label, low, high, note, grand }: { label: string; low: number; high: number; note?: string; grand?: boolean }) {
   const col = grand ? "#fff" : C.black;
@@ -121,6 +122,7 @@ function PastJobs({ jobs, onLoad, currentId }: { jobs: EstimateListItem[]; onLoa
 
 export default function Home() {
   const [settings, setSettings] = useState<SettingsData | null>(null);
+  const [equipment, setEquipment] = useState<EquipmentOption[]>([]);
   const [jobs, setJobs] = useState<EstimateListItem[]>([]);
   const [showJobs, setShowJobs] = useState(false);
 
@@ -172,7 +174,7 @@ export default function Home() {
     let alive = true;
     (async () => {
       try {
-        const res = await fetch("/api/settings");
+        const [res, eq] = await Promise.all([fetch("/api/settings"), fetch("/api/equipment")]);
         if (res.ok && alive) {
           const { settings: s } = (await res.json()) as { settings: SettingsData };
           setSettings(s);
@@ -180,6 +182,7 @@ export default function Home() {
           setMarkup(s.defaultMarkupPct || 35);
           setTrucks(s.trucksPerJob || 1);
         }
+        if (eq.ok && alive) setEquipment((await eq.json()).equipment ?? []);
       } catch {
         // defaults are fine
       }
@@ -349,6 +352,10 @@ export default function Home() {
     if (est?.id) saveNow({ trucksForJob: n });
   }
 
+  function onMachines(uses: { equipmentId: string; hours: number; basis?: string }[]) {
+    if (est?.id) saveNow({ machines: uses });
+  }
+
   function refine() {
     if (!est) return;
     const answered = (est.clarifications_needed ?? [])
@@ -365,7 +372,7 @@ export default function Home() {
   const midpoint = (t.grandLow + t.grandHigh) / 2;
   const mrkAmt = midpoint * (markup / 100);
   const taxLabel = `Sales tax (${tax.ratePct}%)`;
-  const taxNote = `On materials${tax.haul ? " + hauling" : ""}${tax.deposits ? " + deposits" : ""}`;
+  const taxNote = `On materials${tax.haul ? (t.machine > 0 ? " + hauling + machine fuel" : " + hauling") : ""}${tax.deposits ? " + deposits" : ""}`;
   const site = (est?.site ?? null) as SiteSummary | null;
   const gateWarnings = ((est?.verification as { warnings?: { gate: string; detail: string }[] } | undefined)?.warnings ?? []).filter(
     (w) => w.gate !== "catalog_coverage"
@@ -381,6 +388,7 @@ export default function Home() {
       "",
       `Subtotal\t\t\t$${fmt(t.subLow)}\t$${fmt(t.subHigh)}`,
       `Hauling\t\t\t$${fmt(t.haul)}\t$${fmt(t.haul)}`,
+      ...(t.machine ? [`Machine fuel\t\t\t$${fmt(t.machine)}\t$${fmt(t.machine)}`] : []),
       ...(t.deposit ? [`Pallet deposits\t\t\t$${fmt(t.deposit)}\t$${fmt(t.deposit)}`] : []),
       `${taxLabel}\t\t\t$${fmt(t.taxLow)}\t$${fmt(t.taxHigh)}`,
       `GRAND TOTAL\t\t\t$${fmt(t.grandLow)}\t$${fmt(t.grandHigh)}`,
@@ -574,6 +582,7 @@ export default function Home() {
                     <tbody>
                       <TotalRow label="Materials" low={t.subLow} high={t.subHigh} />
                       <TotalRow label="Hauling & delivery" low={t.haul} high={t.haul} note={bottom.haulLabel} />
+                      {t.machine > 0 && <TotalRow label="Machine fuel" low={t.machine} high={t.machine} note={bottom.machineLabel} />}
                       {t.deposit > 0 && <TotalRow label="Pallet deposits (refundable)" low={t.deposit} high={t.deposit} note={bottom.depositLabel} />}
                       <TotalRow label={taxLabel} low={t.taxLow} high={t.taxHigh} note={taxNote} />
                       <TotalRow label="GRAND TOTAL" low={t.grandLow} high={t.grandHigh} grand />
@@ -583,6 +592,18 @@ export default function Home() {
               </div>
 
               <HaulPanel haul={est.haul} total={t.haul} computed={bottom.haulComputed} trucksForJob={trucks} onTrucks={onTrucks} busy={save === "saving"} />
+
+              {(equipment.length > 0 || (est.haul?.machines?.length ?? 0) > 0) && (
+                <MachinePanel
+                  lines={est.haul?.machines ?? []}
+                  equipment={equipment}
+                  total={t.machine}
+                  fuel={est.haul?.fuel ?? null}
+                  onChange={onMachines}
+                  busy={save === "saving"}
+                  canSave={Boolean(est.id)}
+                />
+              )}
 
               {(est.warnings?.length > 0 || gateWarnings.length > 0) && (
                 <div style={{ background: "#FFF9E6", border: `2px solid ${C.amber}`, borderRadius: 12, padding: "14px 20px", marginBottom: 24, fontSize: 15 }}>
@@ -691,6 +712,7 @@ export default function Home() {
                       items,
                       totals: t,
                       haulLabel: bottom.haulLabel,
+                      machineLabel: bottom.machineLabel,
                       depositLabel: bottom.depositLabel,
                       taxLabel,
                       markupPct: markup,

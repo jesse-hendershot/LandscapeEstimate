@@ -5,7 +5,7 @@
  *   model     read the job + site, pick materials and quantities (dims)
  *   build     price from the catalog, compute quantities from dims
  *   gates     deterministic checks; one targeted repair pass if needed
- *   locality  substitutes by delivered cost, haul plan, deposits
+ *   locality  substitutes by delivered cost, haul plan, machine fuel, deposits
  *   totals    tax on the configured scope, grand total
  *   persist   estimate, lines, run log
  *
@@ -21,13 +21,16 @@ import { listMaterials, recordUsage, seedCatalogIfEmpty } from "../catalog/repo"
 import { db } from "../db";
 import { estimateLines, estimateRuns, estimates, type Profile } from "../db/schema";
 import { localityOf } from "../geo/geocode";
-import { currentDiesel } from "../haul/fuel";
+import { listEquipment } from "../fleet/equipment";
+import { listTrailers } from "../fleet/trailers";
+import { currentFuel } from "../haul/fuel";
+import { normalizeUses } from "../haul/machines";
 import { fromCents } from "../money";
 import { buildSiteContext, siteContextText, siteSummary, type Measurement } from "../site/context";
 import { listSuppliers } from "../suppliers/repo";
 import { listTrucks, seedTrucksIfEmpty } from "../trucks/repo";
 import { buildEstimate, toLineItems, type BuildOptions, type ModelOutput } from "./build";
-import { applyLocality } from "./locality";
+import { applyLocality, toMachine } from "./locality";
 import { extractJson } from "./parse";
 import { systemPrompt, userMessage } from "./prompt";
 import { repairInstruction, verifyBuild } from "./verifyBuild";
@@ -110,10 +113,12 @@ export async function runEstimate(profile: Profile, input: EstimateInput) {
   const ownerId = profile.id;
 
   await Promise.all([seedCatalogIfEmpty(ownerId), seedTrucksIfEmpty(ownerId)]);
-  const [catalog, suppliers, trucks] = await Promise.all([
+  const [catalog, suppliers, trucks, trailers, equipment] = await Promise.all([
     listMaterials(ownerId),
     listSuppliers(ownerId, { includeInactive: true }),
     listTrucks(ownerId),
+    listTrailers(ownerId),
+    listEquipment(ownerId),
   ]);
 
   const bias = localityOf(profile.shopAddress) || "Iowa City, IA";
@@ -134,12 +139,12 @@ export async function runEstimate(profile: Profile, input: EstimateInput) {
   }
   const measurements = input.measurements.length ? input.measurements : previous?.measurements ?? [];
 
-  const [site, diesel] = await Promise.all([
+  const [site, fuel] = await Promise.all([
     buildSiteContext(input.jobAddress, { bias, measurements }),
-    currentDiesel(profile),
+    currentFuel(profile),
   ]);
 
-  const system = systemPrompt(catalog, suppliers);
+  const system = systemPrompt(catalog, suppliers, equipment);
   const siteText = siteContextText(site);
   const firstUserText = userMessage({
     contractorName: input.contractorName,
@@ -241,21 +246,28 @@ export async function runEstimate(profile: Profile, input: EstimateInput) {
     }
   }
 
-  // ── locality: substitutes, haul, deposits, totals ──
+  // ── locality: substitutes, haul, machine fuel, deposits, totals ──
   const trucksForJob = input.trucksForJob ?? profile.trucksPerJob;
+  const { uses: machineUses, unknown: unknownMachines } = normalizeUses(modelOutput.machines, equipment.map(toMachine));
   const loc = await applyLocality({
     built,
     catalog,
     suppliers,
     trucks,
+    trailers,
+    equipment,
+    machines: machineUses,
     profile,
     job: site.job,
     trucksForJob,
-    diesel,
+    fuel,
     bias,
     buildOpts,
   });
   built = loc.built;
+  if (unknownMachines > 0) {
+    loc.detail.warnings.push("The AI named a machine that isn't in your Settings — it was left out.");
+  }
 
   // Stale catalog prices on this estimate.
   const staleNames = built.lines
@@ -289,6 +301,8 @@ export async function runEstimate(profile: Profile, input: EstimateInput) {
         subtotalHighCents: built.subtotalHighCents,
         deliveryLowCents: built.deliveryLowCents,
         deliveryHighCents: built.deliveryHighCents,
+        machineCents: built.machineCents,
+        machines: machineUses,
         depositCents: built.depositCents,
         taxLowCents: built.taxLowCents,
         taxHighCents: built.taxHighCents,
@@ -378,6 +392,7 @@ export async function runEstimate(profile: Profile, input: EstimateInput) {
     tax: { ratePct: profile.taxRateBps / 100, haul: profile.taxHaul, deposits: profile.taxDeposits },
     markupPct: profile.defaultMarkupBps / 100,
     trucksForJob,
+    machines: machineUses,
     warnings,
   };
 }

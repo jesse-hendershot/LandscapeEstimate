@@ -58,6 +58,8 @@ export interface SettingsData {
   shopAddress: string;
   shopLocated: boolean;
   dieselOverride: number;
+  gasOverride: number;
+  offroadOverride: number;
   avgMph: number;
   loadMinutes: number;
   pickupStopMinutes: number;

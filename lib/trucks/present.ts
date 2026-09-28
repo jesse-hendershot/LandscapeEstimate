@@ -8,6 +8,8 @@ export function presentTruck(t: TruckRow) {
     id: t.id,
     name: t.name,
     kind: t.kind as "dump" | "pickup",
+    fuel: (t.fuel === "gas" ? "gas" : "diesel") as "diesel" | "gas",
+    trailerId: t.trailerId,
     capacityTons: t.capacityTonsMilli / 1000,
     capacityCuYd: t.capacityCuYdMilli / 1000,
     mpg: t.mpgTenths / 10,
@@ -21,8 +23,12 @@ export type TruckDto = ReturnType<typeof presentTruck>;
 export const truckSchema = z.object({
   name: z.string().trim().min(1, "give it a name").max(80),
   kind: z.enum(["dump", "pickup"]),
-  capacityTons: z.number().min(0.1, "capacity must be above zero").max(40),
-  capacityCuYd: z.number().min(0.1, "capacity must be above zero").max(40),
+  fuel: z.enum(["diesel", "gas"]),
+  trailerId: z.string().uuid().nullable(),
+  // A pickup's own bed can be small or unused when it pulls a trailer, so
+  // zero is allowed; the planner only reads it for trucks without a dump trailer.
+  capacityTons: z.number().min(0).max(40),
+  capacityCuYd: z.number().min(0).max(40),
   mpg: z.number().min(1, "mpg must be at least 1").max(40),
   costPerHour: z.number().min(0).max(500),
 });
@@ -31,6 +37,8 @@ export function truckRowFrom(input: Partial<z.infer<typeof truckSchema>>) {
   const row: Record<string, unknown> = {};
   if (input.name !== undefined) row.name = input.name;
   if (input.kind !== undefined) row.kind = input.kind;
+  if (input.fuel !== undefined) row.fuel = input.fuel;
+  if (input.trailerId !== undefined) row.trailerId = input.trailerId;
   if (input.capacityTons !== undefined) row.capacityTonsMilli = Math.round(input.capacityTons * 1000);
   if (input.capacityCuYd !== undefined) row.capacityCuYdMilli = Math.round(input.capacityCuYd * 1000);
   if (input.mpg !== undefined) row.mpgTenths = Math.round(input.mpg * 10);

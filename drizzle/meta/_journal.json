@@ -15,6 +15,13 @@
       "when": 1790539488641,
       "tag": "0001_locality_engine",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790558423310,
+      "tag": "0002_fleet_equipment",
+      "breakpoints": true
     }
   ]
 }

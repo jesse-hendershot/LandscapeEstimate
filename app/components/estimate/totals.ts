@@ -3,8 +3,9 @@
  *
  * Mirrors the server's arithmetic (lib/estimate/build.ts computeTotals) in
  * cents, so the number on screen while typing is the number the server saves.
- * Hauling and deposits come from the last server response — they depend on
- * trucks and distances the browser doesn't have — and refresh on autosave.
+ * Hauling, machine fuel and deposits come from the last server response —
+ * they depend on trucks, distances and machines the browser doesn't have —
+ * and refresh on autosave.
  */
 
 import type { LineItem } from "@/lib/estimate/schema";
@@ -18,6 +19,9 @@ export interface Bottom {
   haul: number;
   haulLabel: string;
   haulComputed: boolean;
+  /** Machine fuel; taxed with hauling. */
+  machine: number;
+  machineLabel: string;
   deposit: number;
   depositLabel: string;
 }
@@ -26,6 +30,7 @@ export interface Totals {
   subLow: number;
   subHigh: number;
   haul: number;
+  machine: number;
   deposit: number;
   taxLow: number;
   taxHigh: number;
@@ -45,19 +50,21 @@ export function computeTotals(
     subHigh += extend(i.qty, Math.max(i.low, i.high));
   }
   const haul = toCents(bottom.haul);
+  const machine = toCents(bottom.machine ?? 0);
   const deposit = toCents(bottom.deposit);
-  const extra = (tax.haul ? haul : 0) + (tax.deposits ? deposit : 0);
+  const extra = (tax.haul ? haul + machine : 0) + (tax.deposits ? deposit : 0);
   const taxLow = bps(subLow + extra, tax.ratePct);
   const taxHigh = bps(subHigh + extra, tax.ratePct);
   return {
     subLow: subLow / 100,
     subHigh: subHigh / 100,
     haul: haul / 100,
+    machine: machine / 100,
     deposit: deposit / 100,
     taxLow: taxLow / 100,
     taxHigh: taxHigh / 100,
-    grandLow: (subLow + haul + deposit + taxLow) / 100,
-    grandHigh: (subHigh + haul + deposit + taxHigh) / 100,
+    grandLow: (subLow + haul + machine + deposit + taxLow) / 100,
+    grandHigh: (subHigh + haul + machine + deposit + taxHigh) / 100,
   };
 }
 
@@ -65,17 +72,20 @@ export function computeTotals(
 export function bottomFrom(lineItems: LineItem[]): Bottom {
   const haul = lineItems.find((i) => i.kind === "haul" || (!i.kind && /delivery|hauling/i.test(i.material)));
   const dep = lineItems.find((i) => i.kind === "deposit" || (!i.kind && /pallet deposit/i.test(i.material)));
+  const mach = lineItems.find((i) => i.kind === "machine");
   return {
     haul: haul ? haul.qty * haul.low : 0,
     haulLabel: haul?.source ?? "",
     haulComputed: Boolean(haul && /hauling/i.test(haul.material)),
+    machine: mach ? mach.qty * mach.low : 0,
+    machineLabel: mach?.source ?? "",
     deposit: dep ? dep.qty * dep.low : 0,
     depositLabel: dep?.source ?? "",
   };
 }
 
 export const isMaterialRow = (i: LineItem) =>
-  i.kind ? i.kind === "material" : !/delivery|hauling|pallet deposit|sales.?tax|iowa.*tax|grand.?total/i.test(i.material);
+  i.kind ? i.kind === "material" : !/delivery|hauling|machine fuel|pallet deposit|sales.?tax|iowa.*tax|grand.?total/i.test(i.material);
 
 export const fmt = (n: number) =>
   n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
